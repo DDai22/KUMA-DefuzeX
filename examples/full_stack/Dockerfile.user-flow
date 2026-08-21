@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MSWEA_SILENT_STARTUP=1
+
+WORKDIR /opt/defuzex-sdk
+
+# Install the SDK and the real Agent in one image. This is the runtime boundary
+# enforced by create_run(); Backend and Core remain independent host services.
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN python -m pip install --no-cache-dir ".[otel]" "mini-swe-agent==2.4.6"
+
+COPY examples/full_stack/docker_user_flow.py /opt/defuzex-example/docker_user_flow.py
+
+WORKDIR /workspace
+ENTRYPOINT ["python", "/opt/defuzex-example/docker_user_flow.py"]

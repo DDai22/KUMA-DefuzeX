@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install ".[dev]"
+      - run: python -m ruff check --exclude "*.ipynb" .
+      - run: python -m ruff format --check --exclude "*.ipynb" .
+      - run: python -m compileall -q src examples
+
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install .
+      - run: python -c "import importlib.metadata, defuzex; assert defuzex.__version__ == importlib.metadata.version('defuzex')"
+      - run: python -m defuzex --help
+      - run: python examples/minimal_local.py
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install .
+      - run: python -c "import importlib.metadata, defuzex; assert defuzex.__version__ == importlib.metadata.version('defuzex')"
+      - run: python -m defuzex --help
+      - run: python examples/minimal_local.py
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install .
+      - run: python -c "import importlib.metadata, defuzex; assert defuzex.__version__ == importlib.metadata.version('defuzex')"
+      - run: python -m defuzex --help
+      - run: python examples/minimal_local.py
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install ".[dev]"
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Install and verify wheel
+        run: |
+          python -m venv /tmp/defuzex-wheel
+          /tmp/defuzex-wheel/bin/python -m pip install dist/*.whl
+          /tmp/defuzex-wheel/bin/python -c "import importlib.metadata, defuzex; assert defuzex.__version__ == importlib.metadata.version('defuzex')"
+      - name: Install and verify sdist
+        run: |
+          python -m venv /tmp/defuzex-sdist
+          /tmp/defuzex-sdist/bin/python -m pip install dist/*.tar.gz
+          /tmp/defuzex-sdist/bin/python -c "import importlib.metadata, defuzex; assert defuzex.__version__ == importlib.metadata.version('defuzex')"
+
+  docker-smoke:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker build -f examples/full_stack/Dockerfile.user-flow -t defuzex-user-flow .
