@@ -129,9 +129,18 @@ class Run:
     def get_input(self, *, full: bool = False) -> Any:
         """Deliver the current Input without advancing until it is submitted.
 
-        By default only the JSON-compatible payload is returned. ``full=True``
-        returns the immutable :class:`KumaInput` with public identifiers and
-        constraints. Repeated calls before ``submit`` return the same Input.
+        Args:
+            full: Return the immutable :class:`KumaInput` when ``True``; return
+                only its JSON-compatible payload when ``False``.
+
+        Returns:
+            The current payload or ``KumaInput``. Returns ``None`` after all
+            Inputs are committed. Repeated calls before :meth:`submit` return
+            the same Input and do not advance the Run.
+
+        Raises:
+            InputProtocolError: The Run cannot currently deliver an Input.
+            EvidenceCaptureError: Step-level Evidence initialization fails.
         """
 
         with self._mutex:
@@ -166,12 +175,33 @@ class Run:
     ) -> TestReport | None:
         """Validate and commit one result, then advance or judge synchronously.
 
-        When ``output`` is omitted, a completed submission uses the current
-        OpenTelemetry ``invoke_agent``/``invoke_workflow`` output. Agents without
-        that semantic-convention output pass ``output`` explicitly. Evidence
-        offsets, local final files, and Trace byte budgets advance only after the
-        Submission is successfully appended to history. On the final Input this
-        returns a report when Judge is enabled, otherwise ``None``.
+        Args:
+            output: Finite JSON-compatible Agent result. When omitted for a
+                completed Submission, KUMA uses a supported OTel
+                ``invoke_agent``/``invoke_workflow`` output. Explicit output has
+                priority; ``None`` is invalid for ``status="completed"``.
+            status: ``"completed"``, ``"failed"``, ``"timeout"``, or
+                ``"aborted"``.
+            error: Optional caller-safe error summary for a non-completed
+                Submission. Do not pass secrets or raw tracebacks.
+            logs: Optional log-file paths whose bounded increments are captured.
+                Evidence must be enabled; scope and sensitive checks still apply.
+            wait: Must remain ``True`` when the final Submission triggers Judge;
+                the public Run API does not expose background polling.
+
+        Returns:
+            Final :class:`TestReport` only when this is the last Input and Judge
+            completes; otherwise ``None``. The committed Submission is available
+            through :attr:`history`.
+
+        Raises:
+            InputProtocolError: No Input is currently delivered.
+            ValidationError: Output, status, error, or serialization is invalid.
+            EvidenceCaptureError: Requested Evidence cannot be captured safely.
+            KumaError: The final official or custom Judge fails.
+
+        Evidence offsets, local files, and Trace byte budgets advance only after
+        the immutable Submission is appended successfully.
         """
 
         with self._mutex:
@@ -321,7 +351,12 @@ class Run:
         return None
 
     def cancel(self) -> None:
-        """Cancel an unfinished Run and release its Evidence and runtime state."""
+        """Cancel an unfinished Run and release Evidence, files, and its lock.
+
+        The operation is idempotent for already-cancelled or report-ready Runs.
+        It raises :class:`InputProtocolError` when cancellation would hide a
+        failed or actively committing state.
+        """
 
         with self._mutex:
             if self._state == "report_ready":
@@ -343,10 +378,22 @@ class Run:
     def judge(self, *, wait: bool = True) -> TestReport:
         """Synchronously judge committed history for a completed Run.
 
-        ``wait=False`` is rejected because the public Run API remains synchronous.
-        The Official Provider waits on its bounded v2 operation internally. A
-        Provider failure leaves the Run completed so the caller may retry without
-        losing truthful history or pending-operation metadata.
+        Args:
+            wait: Must be ``True``. Official operation polling remains internal
+                and bounded by ``operation_wait_timeout`` from :func:`create_run`.
+
+        Returns:
+            Validated final :class:`TestReport`. Repeated calls after success
+            return the same report.
+
+        Raises:
+            ConfigurationError: ``wait=False`` is requested.
+            InputProtocolError: The Run is not completed and ready for Judge.
+            ProviderError: No Judge is configured or a custom Judge fails.
+            KumaError: The official Judge operation fails or times out.
+
+        A failure restores the ``completed`` state so retry reuses truthful
+        History and pending-operation metadata rather than creating a new result.
         """
 
         with self._mutex:

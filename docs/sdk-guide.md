@@ -175,28 +175,10 @@ Repeated `get_input()` calls before `submit()` return the same Input. Invalid or
 
 ### `create_run()` parameters
 
-| Parameter | Default | Purpose |
-|---|---:|---|
-| `repo_path` | `"."` | Repository evaluated by the Agent |
-| `requirement_path` | `None` | Requirement file; official Case Providers require it |
-| `case_provider` | `None` | Custom Case Provider; omitted selects the official Provider |
-| `judge_provider` | `None` | Custom Judge Provider; omitted selects the official Provider when judging |
-| `strategy` | `"auto"` | Automatic selection or an explicit strategy ID |
-| `max_inputs` | `None` | Positive Input bound; required for custom Cases |
-| `judge` | `True` | Run the configured Judge after the final Input |
-| `on_failure` | `"continue"` | Continue or stop after a failed submission |
-| `allow_local` | `False` | Permit trusted development outside Docker |
-| `track_files` | `True` | Capture bounded file metadata around each Input |
-| `upload_diff` | `False` | Include bounded text diffs in file Evidence |
-| `save_local` | `False` | Save submission records under `.kuma/runs/` |
-| `allow_sensitive` | `False` | Explicit override for ordinary Evidence scanning; does not relax Trace allowlists |
-| `timeout` | `300.0` | Per-request public HTTP timeout in seconds |
-| `operation_wait_timeout` | `600.0` | Total wait bound for one official Case or Judge operation |
-| `max_retries` | `2` | Automatic transient retry count, from 0 through 5 |
-| `api_key` | `None` | Per-call credential with highest precedence |
-| `trace_evidence` | `None` | Capture returned by `configure_trace_evidence()` |
-
-`on_failure` accepts only `continue` or `stop`. The Python API is synchronous; `wait=False` is not supported.
+The [Python API reference](api-reference.md#create_run) is authoritative for
+every argument's type, default, accepted values, side effects, return value, and
+failure behavior. `on_failure` accepts only `continue` or `stop`. The Python API
+is synchronous and does not support `wait=False`.
 
 ## Evidence, files, logs, and privacy
 
@@ -325,6 +307,7 @@ An operation timeout retains bounded recovery metadata without storing credentia
 ## Reference
 
 - [Architecture](architecture.md)
+- [Python API reference](api-reference.md)
 - [Public API contract](api-contract.md)
 - [Runtime Evidence contract](runtime-evidence.md)
 - [Minimal local example](../examples/minimal_local.py)

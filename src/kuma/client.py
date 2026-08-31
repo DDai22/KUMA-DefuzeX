@@ -28,7 +28,24 @@ Transport = WireTransport
 
 
 class KumaClient:
-    """Compatibility client for account and public service configuration reads."""
+    """Read account and public service configuration without creating a Run.
+
+    Args:
+        api_key: Optional ``dfx_`` credential. ``None`` resolves
+            ``KUMA_API_KEY`` and then the user credential file. Construction may
+            remain unauthenticated, but read methods then raise
+            ``KumaAuthenticationError``.
+        base_url: Public Backend API base URL. Remote URLs require HTTPS;
+            loopback HTTP is accepted for local integration.
+        timeout: Positive finite timeout in seconds for each GET request.
+        transport: Optional test/integration transport implementing the public
+            wire callable contract. Ordinary users should leave it as ``None``.
+
+    Raises:
+        ConfigurationError: The URL, timeout, or resolved credential is invalid.
+
+    The client never contacts MCP, model providers, or databases directly.
+    """
 
     def __init__(
         self,
@@ -81,17 +98,25 @@ class KumaClient:
             ) from None
 
     def entitlements(self) -> Mapping[str, Any]:
-        """Return user, key scopes, subscription, and quota information."""
+        """Return public user, key-scope, subscription, and quota information.
+
+        Raises ``KumaAuthenticationError``, ``KumaPermissionError``, or
+        ``KumaRateLimitError`` for the corresponding public HTTP boundary.
+        """
 
         return self._read("/sdk/entitlements/")
 
     def strategies(self) -> Mapping[str, Any]:
-        """Return the Backend-managed active Case strategy configuration."""
+        """Return the Backend-managed public active Case strategy catalog.
+
+        This is an explicit discovery read; Case generation does not use it as a
+        client-side availability precheck.
+        """
 
         return self._read("/sdk/strategies/")
 
     def judge_config(self) -> Mapping[str, Any]:
-        """Return current public Judge upload limits and evidence types."""
+        """Return current public Judge upload limits and accepted Evidence types."""
 
         return self._read("/sdk/judge/config/")
 

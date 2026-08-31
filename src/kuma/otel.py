@@ -117,10 +117,24 @@ def configure_trace_evidence(
 ) -> TraceEvidenceCapture:
     """Attach bounded Trace Evidence to an SDK-capable TracerProvider.
 
-    The provider is never replaced or reset, so existing instrumentation and
-    processors remain active. Call this once for the provider, then pass the
-    returned capture to :func:`kuma.create_run`. If no explicit provider is given,
-    the current global provider must expose ``add_span_processor``.
+    Args:
+        tracer_provider: Existing OpenTelemetry SDK ``TracerProvider`` or
+            compatible object exposing ``add_span_processor``. ``None`` selects
+            the current global provider.
+        limits: Optional :class:`TraceEvidenceLimits`; ``None`` uses bounded
+            defaults.
+
+    Returns:
+        Capture to pass as ``create_run(trace_evidence=...)``. Existing
+        instrumentation and exporters remain attached to their Provider.
+
+    Raises:
+        ConfigurationError: The selected Provider cannot accept a span processor
+            or the limits are invalid.
+
+    This function never replaces or resets the global Provider. Call it once for
+    an explicit Provider; automatic ``create_run`` discovery can reuse a
+    weak-referenceable configured Provider.
     """
 
     provider = tracer_provider or trace.get_tracer_provider()

@@ -39,7 +39,7 @@ kuma quickstart
 
 ## 详细文档
 
-[简体中文 SDK 指南](docs/sdk-guide.zh-CN.md) · [English SDK guide](docs/sdk-guide.md) · [Runtime Evidence 合同](docs/runtime-evidence.md)
+[简体中文 SDK 指南](docs/sdk-guide.zh-CN.md) · [中文 API 参考](docs/api-reference.zh-CN.md) · [English SDK guide](docs/sdk-guide.md) · [Python API reference](docs/api-reference.md) · [Runtime Evidence 合同](docs/runtime-evidence.md)
 
 ## 项目链接
 
