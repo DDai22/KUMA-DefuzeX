@@ -132,9 +132,26 @@ def configure_trace_evidence(
         ConfigurationError: The selected Provider cannot accept a span processor
             or the limits are invalid.
 
-    This function never replaces or resets the global Provider. Call it once for
-    an explicit Provider; automatic ``create_run`` discovery can reuse a
-    weak-referenceable configured Provider.
+    Preconditions:
+        Install the ``otel`` extra and configure an in-process OTel SDK Provider
+        that accepts span processors before calling this function. Pass the
+        application's non-global Provider explicitly when its spans are not sent
+        through the global Provider.
+
+    Postconditions:
+        One KUMA span processor is attached to the selected Provider and the
+        returned capture is ready to associate ended spans with a Run. Existing
+        instrumentation, processors, and exporters remain installed.
+
+    Side Effects:
+        Mutates the selected Provider by registering a processor. Call once per
+        explicitly managed Provider; automatic ``create_run`` discovery reuses
+        a compatible weak-referenceable Provider rather than attaching again.
+
+    Security/Privacy:
+        Only same-process ended spans are considered. Mapping keeps a bounded
+        allowlist and rejects prompt, completion, source, raw log, credential,
+        and private-Rubric content regardless of ``allow_sensitive``.
     """
 
     provider = tracer_provider or trace.get_tracer_provider()

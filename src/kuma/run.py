@@ -141,6 +141,26 @@ class Run:
         Raises:
             InputProtocolError: The Run cannot currently deliver an Input.
             EvidenceCaptureError: Step-level Evidence initialization fails.
+
+        Preconditions:
+            The Run must be ``ready`` or already ``input_delivered``. The caller
+            must submit the currently delivered Input before requesting the next
+            one.
+
+        Postconditions:
+            A successful first delivery changes ``ready`` to
+            ``input_delivered`` and starts that Input's Evidence transaction.
+            Repeated delivery leaves the state and Input unchanged. Returning
+            ``None`` means there are no uncommitted Inputs.
+
+        Side Effects:
+            May initialize bounded file, log, and Trace capture for the current
+            Input; it never calls the Judge or advances ``history``.
+
+        Security/Privacy:
+            The returned payload is the public Case Input intended for the
+            caller's Agent. Private Rubrics and private evaluation metadata are
+            never exposed through either return form.
         """
 
         with self._mutex:
@@ -200,8 +220,31 @@ class Run:
             EvidenceCaptureError: Requested Evidence cannot be captured safely.
             KumaError: The final official or custom Judge fails.
 
-        Evidence offsets, local files, and Trace byte budgets advance only after
-        the immutable Submission is appended successfully.
+        Preconditions:
+            Exactly one Input must have been returned by :meth:`get_input` and
+            not yet submitted. A ``completed`` Submission needs either an
+            explicit non-``None`` output or a supported OTel-captured final
+            output. Paths in ``logs`` must be within the allowed Evidence scope.
+
+        Postconditions:
+            On commit, one immutable Input/Submission pair is appended to
+            ``history`` exactly once and Evidence offsets, local records, and
+            Trace byte budgets advance together. The Run then becomes ``ready``,
+            ``completed``, or ``report_ready``. Validation or preparation failure
+            leaves the Input delivered; a Judge failure leaves the completed
+            history available for :meth:`judge` retry.
+
+        Side Effects:
+            Reads requested bounded log increments and file state, may write an
+            atomic local Submission record when ``save_local=True``, and may call
+            the configured Judge after the final Input. Official Judge polling
+            is synchronous and uses the existing idempotent operation.
+
+        Security/Privacy:
+            ``output``, ``error``, logs, diffs, and Evidence can cross the public
+            Judge boundary. Pass only content authorized for evaluation; raw
+            tracebacks, credentials, prompts, and unapproved file contents must
+            not be supplied.
         """
 
         with self._mutex:
@@ -353,9 +396,25 @@ class Run:
     def cancel(self) -> None:
         """Cancel an unfinished Run and release Evidence, files, and its lock.
 
-        The operation is idempotent for already-cancelled or report-ready Runs.
-        It raises :class:`InputProtocolError` when cancellation would hide a
-        failed or actively committing state.
+        Returns:
+            ``None``.
+
+        Raises:
+            InputProtocolError: The Run is failed or is in an intermediate state
+                whose work must not be hidden by cancellation.
+
+        Preconditions:
+            The Run is ``ready``, ``input_delivered``, ``completed``, ``judging``,
+            ``cancelled``, or ``report_ready``.
+
+        Postconditions:
+            An unfinished Run becomes ``cancelled``; active Evidence is discarded
+            and the runtime lock is released. Calls on ``cancelled`` or
+            ``report_ready`` Runs are idempotent and leave state unchanged.
+
+        Side Effects:
+            Closes runtime resources and removes validated temporary runtime
+            files. It does not submit a result or invoke the Judge.
         """
 
         with self._mutex:
@@ -392,8 +451,26 @@ class Run:
             ProviderError: No Judge is configured or a custom Judge fails.
             KumaError: The official Judge operation fails or times out.
 
-        A failure restores the ``completed`` state so retry reuses truthful
-        History and pending-operation metadata rather than creating a new result.
+        Preconditions:
+            Every delivered Input must already have one committed Submission,
+            the Run state must be ``completed``, and a Judge Provider must be
+            configured. ``wait`` must remain ``True``.
+
+        Postconditions:
+            Success stores one validated report, changes state to
+            ``report_ready``, and makes repeated calls return that same report.
+            Failure restores ``completed`` so retry reuses the same immutable
+            history, idempotency identity, and pending operation.
+
+        Side Effects:
+            Calls the configured Judge once per unresolved attempt. An official
+            Judge uses bounded synchronous HTTP polling; it never starts a new
+            operation merely because a prior poll or validation failed.
+
+        Security/Privacy:
+            Only validated public Case provenance, committed Submission
+            Evidence, and bounded public metadata cross the official Judge
+            boundary; the SDK does not retrieve private Rubrics.
         """
 
         with self._mutex:

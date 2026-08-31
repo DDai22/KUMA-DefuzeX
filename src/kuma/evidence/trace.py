@@ -71,8 +71,22 @@ class TraceEvidenceLimits:
         max_total_bytes: Maximum compact JSON bytes across all Trace Evidence
             envelopes committed by one Run; defaults to 512,000.
 
-    Every limit must be a positive integer. ``max_total_bytes`` must fit the
-    smallest valid envelope or construction raises ``ConfigurationError``.
+    Raises:
+        ConfigurationError: Any value is a boolean, non-integer, or less than
+            one, or ``max_total_bytes`` cannot fit the smallest valid envelope.
+
+    Preconditions:
+        Values describe a finite per-Run capture budget. Callers choosing a
+        smaller budget must still leave room for the required JSON envelope.
+
+    Postconditions:
+        Construction returns an immutable validated limit set. Captures using it
+        drop or truncate excess Trace data and report the reason instead of
+        exceeding these bounds.
+
+    Security/Privacy:
+        Increasing a limit changes capacity only; it never expands the Trace
+        attribute/event allowlist or permits sensitive values.
     """
 
     max_spans: int = 200

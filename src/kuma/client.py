@@ -44,7 +44,25 @@ class KumaClient:
     Raises:
         ConfigurationError: The URL, timeout, or resolved credential is invalid.
 
-    The client never contacts MCP, model providers, or databases directly.
+    Preconditions:
+        ``base_url`` must be HTTPS unless it is an allowed local integration
+        address. A supplied or discovered key must satisfy the KUMA credential
+        format; omitting a key is allowed only until an authenticated read method
+        is called.
+
+    Postconditions:
+        Construction returns a reusable client with validated URL, timeout, and
+        credential state. It performs no request and does not prove that the key
+        is accepted by the service.
+
+    Side Effects:
+        May read ``KUMA_API_KEY`` or the user credential file. Each read method
+        performs one public Backend GET request with no automatic retry.
+
+    Security/Privacy:
+        ``repr(client)`` reports only URL and authentication presence, never the
+        key. The client never contacts MCP, model providers, or databases
+        directly.
     """
 
     def __init__(

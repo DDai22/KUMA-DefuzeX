@@ -48,9 +48,23 @@ def configure(*, api_key: str) -> Path:
             cannot be resolved.
         OSError: The credential directory or file cannot be written.
 
-    This function performs no network request. ``KUMA_CONFIG_HOME`` redirects
-    the user-level location for isolated development and tests. The file contains
-    the credential, so callers must not print or commit it.
+    Preconditions:
+        ``api_key`` must be a complete platform-issued credential, not a redacted
+        display value. ``KUMA_CONFIG_HOME``, when set, must identify a writable
+        directory in which the caller intends KUMA to keep credentials.
+
+    Postconditions:
+        On success, the returned path exists and contains the validated key in a
+        JSON object. The final file replacement is atomic. If writing fails, the
+        temporary file is removed and no partial credential file is installed.
+
+    Side Effects:
+        Creates the credential directory when needed and replaces the KUMA user
+        credential file. It performs no network request.
+
+    Security/Privacy:
+        The credential file is restricted to the current user where the platform
+        permits. It contains the real key; do not print, upload, or commit it.
     """
 
     return write_api_key(api_key)
@@ -439,10 +453,33 @@ def create_run(
             Case validation, or public service validation fails. The concrete
             subclass exposes stable ``code`` and ``retryable`` fields.
 
-    Official Providers use only the public Backend. Custom Providers remain
-    local unless paired with an official Provider. The caller owns Agent
-    execution and must alternate :meth:`Run.get_input` with one
-    :meth:`Run.submit`, or call :meth:`Run.cancel` when abandoning the Run.
+    Preconditions:
+        ``repo_path`` must identify the repository the caller authorizes KUMA to
+        inspect. Official Case generation requires a readable Requirement and a
+        valid credential. Unless ``allow_local=True``, the process must run in
+        the supported container environment. Only one Run may hold the local
+        active-Run lock at a time.
+
+    Postconditions:
+        On success, the returned Run owns the active-Run lock, has one validated
+        Case with between one and ``max_steps`` Inputs when that limit is set,
+        and is ready for :meth:`Run.get_input`. If setup fails after acquiring
+        runtime resources, those resources and the lock are closed before the
+        exception is re-raised.
+
+    Side Effects:
+        Reads the Requirement and bounded repository metadata, may create the
+        repository's ``.kuma`` runtime area, and may call the public Backend for
+        official Case generation. The caller must alternate
+        :meth:`Run.get_input` with one :meth:`Run.submit`, or call
+        :meth:`Run.cancel` when abandoning the Run.
+
+    Security/Privacy:
+        Official Providers communicate only with the public Backend; this SDK
+        never contacts MCP, a model provider, or a database directly. File and
+        Trace capture remain bounded and sensitive-data checked. Custom
+        Providers execute in the caller's process and therefore inherit its
+        permissions.
     """
 
     config = _create_run_config(

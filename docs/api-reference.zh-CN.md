@@ -20,7 +20,15 @@ credential_path = configure(api_key="dfx_your_key_here")
 
 <!-- api-parameters:configure:end -->
 
-返回原子写入的用户凭证文件绝对 `Path`，不发送网络请求。`KUMA_CONFIG_HOME` 可改变凭证目录。非法 Key 抛出 `ConfigurationError`，文件系统失败保留为真实 `OSError`。该文件含 Key，禁止打印或提交。
+**返回值：** 原子写入的用户凭证文件绝对 `Path`。
+
+**前置条件：** 必须传平台签发的完整 `dfx_...`，不能传脱敏后的展示值。若设置 `KUMA_CONFIG_HOME`，它必须是当前进程被允许写入的凭证目录。
+
+**后置条件：** 成功后，返回路径存在且包含通过校验的 Key；最终文件采用原子替换，不会留下“写了一半”的正式文件。写入失败时会删除临时文件。
+
+**异常：** Key 或凭证位置无效时抛 `ConfigurationError`；真实文件系统失败抛 `OSError`。
+
+**副作用与安全：** 必要时创建凭证目录，但不发送网络请求。文件内是真实 Key，禁止打印、上传或提交到 Git。
 
 ## `create_run`
 
@@ -55,7 +63,15 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:create_run:end -->
 
-返回处于 `ready` 状态的同步 `Run`。配置、凭证、隔离、Provider、Case 或公网服务失败会抛出具体 `KumaError` 子类，并提供稳定的 `code`、`retryable` 和可选 `request_id`。创建过程可能读取 Requirement 和有界仓库元数据、创建 `.kuma/`、获取单 active Run 锁，并在使用官方 Provider 时调用公开 Backend。
+**返回值：** 处于 `ready` 状态的同步 `Run`。
+
+**前置条件：** `repo_path` 必须是调用方明确允许 KUMA 检查的仓库。官方 Case 需要可读的 Requirement 和有效 Key。除非设置 `allow_local=True`，进程必须运行在支持的容器环境中；同一本地运行环境一次只能有一个 Run 持有 active-Run 锁。
+
+**后置条件：** 返回的 Run 已持有该锁，并装入一个通过校验的 Case。若 `max_steps=N`，Case 可以有 1 到 N 个 Input，而不是必须恰好 N 个。获取运行资源后若初始化失败，KUMA 会先关闭资源并释放锁，再把异常抛给调用方。
+
+**异常：** 配置、凭证、隔离、Provider、Case 或公网服务失败会抛出具体 `KumaError` 子类，并提供稳定的 `code`、`retryable` 和可选 `request_id`。
+
+**副作用与安全：** 读取 Requirement 和有界仓库元数据，可能创建 `.kuma/`，官方 Provider 只调用公开 Backend。SDK 不直连 MCP、模型或数据库；自定义 Provider 在调用方进程内运行并继承该进程权限。
 
 ## `Run`
 
@@ -69,7 +85,13 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:get_input:end -->
 
-返回当前 Input 且不推进状态；全部提交后返回 `None`。在 `submit()` 前重复调用返回同一个 Input。非法顺序抛出 `InputProtocolError`。
+**返回值：** 当前 payload 或不可变 `KumaInput`；全部 Input 已提交后返回 `None`。
+
+**前置条件：** Run 必须为 `ready` 或已经是 `input_delivered`；拿到当前 Input 后必须先提交，才能请求下一个。
+
+**后置条件：** 首次交付会把 `ready` 改为 `input_delivered` 并开始该步骤的 Evidence；重复调用返回同一个 Input，不推进状态和 history。
+
+**异常与副作用：** 顺序错误抛 `InputProtocolError`，Evidence 初始化失败抛 `EvidenceCaptureError`。该方法可能启动有界采集，但不会调用 Judge 或追加 history。
 
 ### `submit`
 
@@ -85,7 +107,15 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:submit:end -->
 
-只有最后一次 Submission 完成 Judge 时返回 `TestReport`，其他情况返回 `None`。Submission、Evidence offset、本地记录和 Trace 字节预算按事务提交。非法输出/状态抛出 `ValidationError` 或 `InputProtocolError`；采集和 Judge 失败保留稳定 `KumaError`。
+**返回值：** 只有最后一次 Submission 完成 Judge 时返回 `TestReport`，其他情况返回 `None`。
+
+**前置条件：** 当前必须有一个已交付但未提交的 Input。`completed` 必须有显式非 `None` output，或有受支持 OTel 捕获的真实最终输出；`logs` 路径必须位于允许的 Evidence 范围内。
+
+**后置条件：** 成功时只追加一个不可变 history 项，Evidence offset、本地记录和 Trace 字节预算一起提交。校验或准备失败后 Input 仍保持已交付；最终 Judge 失败后已完成 history 可供 `judge()` 重试。
+
+**异常：** 协议、输出、序列化和采集错误分别使用 `InputProtocolError`、`ValidationError`、`EvidenceCaptureError`；Judge 错误保留稳定 `KumaError` 类型。
+
+**副作用与安全：** 可能读取有界文件/日志变化、原子保存本地 Submission，并同步调用 Judge。output、error、日志、diff 和 Evidence 可能进入公开 Judge 边界，禁止传入凭证、原始 traceback、Prompt 或未经批准的文件正文。
 
 ### `judge`
 
@@ -97,11 +127,25 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:judge:end -->
 
-返回验证后的 `TestReport`。失败时恢复 `completed`，重试会复用 History 和 pending operation。Run 未完成时抛出 `InputProtocolError`；`wait=False` 抛出 `ConfigurationError`。
+**返回值：** 通过校验的 `TestReport`；成功后重复调用返回同一报告。
+
+**前置条件：** 所有 Input 都已有已提交 Submission，Run 为 `completed`，已配置 Judge Provider，并且 `wait=True`。
+
+**后置条件：** 成功时保存报告并进入 `report_ready`；失败时恢复 `completed`，保留不可变 history、幂等 identity 和 pending operation 供重试。
+
+**异常与副作用：** Run 未完成抛 `InputProtocolError`，`wait=False` 抛 `ConfigurationError`，Provider/服务失败保留稳定 `KumaError`。该调用同步执行 Judge；不能仅因轮询失败就创建第二个 operation。
 
 ### `cancel`
 
-`cancel()` 没有参数并返回 `None`，会释放 Evidence 状态、临时运行文件和 active Run 锁。重复取消安全；不允许隐藏提交中/失败状态时抛出 `InputProtocolError`。
+`cancel()` 没有参数。
+
+**返回值：** `None`。
+
+**前置条件：** Run 必须处于允许取消的生命周期状态；不能用 cancel 隐藏 failed 或正在提交的状态。
+
+**后置条件：** 未完成 Run 进入 `cancelled`，活动 Evidence 被丢弃，运行资源和 active-Run 锁被释放；对 `cancelled` 或 `report_ready` 重复调用是幂等的。
+
+**异常与副作用：** 非法状态抛 `InputProtocolError`。该方法删除经过校验的临时运行文件，但不会提交结果或调用 Judge。
 
 ### 只读属性
 
@@ -130,7 +174,11 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:KumaClient:end -->
 
-`entitlements()`、`strategies()` 和 `judge_config()` 均无参数，返回验证后的公开 mapping。它们可能抛出 `KumaAuthenticationError`、`KumaPermissionError` 或 `KumaRateLimitError`，不会直连 MCP、模型或数据库。
+**前置条件：** 构造阶段会校验 URL、timeout 和发现的 Key，但不会发送请求；调用鉴权读取方法前必须有有效 Key。
+
+**后置条件：** client 可以复用；`entitlements()`、`strategies()` 和 `judge_config()` 返回校验后的公开 mapping，不创建 Run。
+
+**异常与副作用：** 构造配置错误抛 `ConfigurationError`；读取方法发送一次公开 Backend GET，可能抛 `KumaAuthenticationError`、`KumaPermissionError` 或 `KumaRateLimitError`。凭证发现可能读取环境变量或用户凭证文件；`repr(client)` 不含 Key，也不会直连 MCP、模型或数据库。
 
 ## OpenTelemetry
 
@@ -145,7 +193,13 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:configure_trace_evidence:end -->
 
-返回供 `create_run(trace_evidence=...)` 使用的 `TraceEvidenceCapture`；非法 Provider 或限制抛出 `ConfigurationError`。
+**返回值：** 供 `create_run(trace_evidence=...)` 使用的 `TraceEvidenceCapture`。
+
+**前置条件：** 已安装 `otel` extra，并配置了可添加 span processor 的同进程 OTel SDK Provider；非全局 Provider 必须显式传入。
+
+**后置条件：** 选定 Provider 上新增一个 KUMA processor，返回的 capture 可以把已结束 span 关联到 Run；原有 instrumentation 和 exporter 保持不变。
+
+**异常与副作用：** Provider 或限制无效时抛 `ConfigurationError`。注册操作会修改所选 Provider，显式管理的 Provider 应只调用一次。只保留有界 allowlist 数据；Prompt、completion、源码、原始日志、凭证和 Private Rubric 始终排除。
 
 <!-- api-parameters:TraceEvidenceLimits:start -->
 
@@ -158,6 +212,10 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 | `max_total_bytes` | 正 `int` | `512000` 字节 | 一个 Run 的全部已提交 Trace envelope 紧凑 JSON 合计不能超过该值；KUMA 会丢弃或截断 Trace 数据来守住预算，但该值本身必须能容纳最小合法 envelope。 |
 
 <!-- api-parameters:TraceEvidenceLimits:end -->
+
+**前置条件：** 每项都是正整数，且 `max_total_bytes` 足以容纳必需 envelope。
+
+**后置条件：** 生成不可变限制对象；超额 Trace 会按明确原因丢弃或截断，而不会越过预算。提高容量不会扩大隐私 allowlist。
 
 ## 公共结果契约
 

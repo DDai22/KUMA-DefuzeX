@@ -22,11 +22,22 @@ credential_path = configure(api_key="dfx_your_key_here")
 
 <!-- api-parameters:configure:end -->
 
-Returns the absolute `Path` of the atomically written user credential file. The
-function makes no network request. `KUMA_CONFIG_HOME` redirects the credential
-directory. Invalid keys raise `ConfigurationError`; filesystem failures remain
-real `OSError` values. The file contains the key and must never be printed or
-committed.
+**Returns:** the absolute `Path` of the atomically written user credential file.
+
+**Preconditions:** pass the complete platform-issued `dfx_...` value. If
+`KUMA_CONFIG_HOME` is set, it must name a directory this process may use for the
+credential file.
+
+**Postconditions:** on success, the returned file exists and contains the
+validated key. Atomic replacement prevents a partially written final file; a
+failed write removes its temporary file.
+
+**Raises:** `ConfigurationError` for an invalid key or unresolved credential
+location, and `OSError` for a real filesystem failure.
+
+**Side effects and security:** creates the credential directory if needed but
+makes no network request. The file contains the real key; never print, upload,
+or commit it.
 
 ## `create_run`
 
@@ -64,12 +75,26 @@ run = create_run(
 
 <!-- api-parameters:create_run:end -->
 
-Returns a synchronous `Run` in `ready` state. Configuration, credential,
-isolation, Provider, Case, and public-service failures raise a `KumaError`
-subclass with stable `code`, `retryable`, and optional `request_id` fields.
-Creating a Run may read the requirement and bounded repository metadata, create
-`.kuma/`, acquire the one-active-Run lock, and call the public Backend when an
-official Provider is selected.
+**Returns:** a synchronous `Run` in `ready` state.
+
+**Preconditions:** `repo_path` identifies the repository the caller authorizes
+KUMA to inspect. Official Case generation needs a readable Requirement and a
+valid key. Unless `allow_local=True`, execution must be inside the supported
+container environment. Only one Run may own the local active-Run lock.
+
+**Postconditions:** the returned Run owns that lock and contains one validated
+Case. If `max_steps=N`, the Case contains from 1 through N Inputs, not exactly N.
+If setup fails after runtime acquisition, KUMA closes the runtime and releases
+the lock before re-raising the error.
+
+**Raises:** configuration, credential, isolation, Provider, Case, or public
+service failures raise a concrete `KumaError` subclass with stable `code`,
+`retryable`, and optional `request_id`.
+
+**Side effects and security:** reads the Requirement and bounded repository
+metadata, may create `.kuma/`, and may call only the public Backend for official
+Providers. It never contacts MCP, a model, or a database directly. Custom
+Providers run in the caller's process with that process's permissions.
 
 ## `Run`
 
@@ -83,9 +108,19 @@ official Provider is selected.
 
 <!-- api-parameters:get_input:end -->
 
-Returns the current Input without advancing, or `None` after all Inputs are
-committed. Repeated calls before `submit()` return the same Input. Invalid Run
-ordering raises `InputProtocolError`.
+**Returns:** the current payload or immutable `KumaInput`; returns `None` after
+all Inputs are committed.
+
+**Preconditions:** the Run is `ready` or already `input_delivered`; submit the
+current Input before requesting a different one.
+
+**Postconditions:** first delivery changes `ready` to `input_delivered` and
+starts step Evidence. Repeated calls return the same Input without advancing
+state or history.
+
+**Raises and side effects:** invalid order raises `InputProtocolError`; Evidence
+startup may raise `EvidenceCaptureError`. The method may begin bounded capture,
+but it never calls Judge or appends history.
 
 ### `submit`
 
@@ -101,10 +136,26 @@ ordering raises `InputProtocolError`.
 
 <!-- api-parameters:submit:end -->
 
-Returns `TestReport` only when the final Submission completes Judge; otherwise
-returns `None`. Submission, Evidence offsets, local records, and Trace byte budget
-commit transactionally. Invalid output/state raises `ValidationError` or
-`InputProtocolError`; capture and Judge failures remain stable `KumaError` values.
+**Returns:** `TestReport` only when the final Submission completes Judge;
+otherwise `None`.
+
+**Preconditions:** one Input is currently delivered. A completed Submission has
+an explicit non-`None` output or a supported OTel-captured final output. Requested
+log paths are within the configured Evidence scope.
+
+**Postconditions:** success appends exactly one immutable history item and
+commits Evidence offsets, local records, and Trace byte budget together. A
+validation/preparation failure leaves the Input delivered. A final Judge failure
+leaves completed history available for `judge()` retry.
+
+**Raises:** protocol, output, serialization, or Evidence failures use the
+corresponding `InputProtocolError`, `ValidationError`, or
+`EvidenceCaptureError`; Judge failures retain stable `KumaError` types.
+
+**Side effects and security:** may read bounded file/log changes, atomically save
+a local Submission, and synchronously call Judge. Submitted output, errors,
+logs, diffs, and Evidence may cross the public Judge boundary; never include
+credentials, raw tracebacks, prompts, or unapproved file contents.
 
 ### `judge`
 
@@ -116,15 +167,36 @@ commit transactionally. Invalid output/state raises `ValidationError` or
 
 <!-- api-parameters:judge:end -->
 
-Returns the validated `TestReport`. A failed attempt restores `completed` state,
-so retry reuses History and pending operation metadata. Calling before completion
-raises `InputProtocolError`; `wait=False` raises `ConfigurationError`.
+**Returns:** the validated `TestReport`; repeated calls after success return the
+same report.
+
+**Preconditions:** all Inputs have committed Submissions, the Run is `completed`,
+a Judge Provider is configured, and `wait=True`.
+
+**Postconditions:** success stores the report and changes state to
+`report_ready`. Failure restores `completed`, preserving immutable history,
+idempotency identity, and pending operation for retry.
+
+**Raises and side effects:** an incomplete Run raises `InputProtocolError`,
+`wait=False` raises `ConfigurationError`, and Provider/service failures retain
+stable `KumaError` types. The call synchronously invokes the configured Judge;
+retry does not create a second operation merely because polling failed.
 
 ### `cancel`
 
-`cancel()` has no arguments and returns `None`. It releases Evidence state,
-temporary runtime files, and the active-Run lock. Repeated cancellation is safe;
-invalid commit/failure states raise `InputProtocolError`.
+`cancel()` has no arguments.
+
+**Returns:** `None`.
+
+**Preconditions:** the Run is in a cancellable lifecycle state; a failed or
+actively committing state cannot be hidden by cancellation.
+
+**Postconditions:** an unfinished Run is `cancelled`, active Evidence is
+discarded, and runtime resources plus the active-Run lock are released. Calls on
+already `cancelled` or `report_ready` Runs are idempotent.
+
+**Raises and side effects:** invalid states raise `InputProtocolError`. The call
+removes validated temporary runtime files but does not submit or invoke Judge.
 
 ### Read-only properties
 
@@ -153,9 +225,18 @@ Use `KumaClient` for authenticated configuration reads without opening a Run.
 
 <!-- api-parameters:KumaClient:end -->
 
-`entitlements()`, `strategies()`, and `judge_config()` take no arguments and
-return validated public mappings. They may raise `KumaAuthenticationError`,
-`KumaPermissionError`, or `KumaRateLimitError`; none contacts MCP, a model, or a
+**Preconditions:** construction validates the URL, timeout, and any discovered
+key but makes no request. Authenticated read methods require a valid key.
+
+**Postconditions:** a constructed client is reusable. `entitlements()`,
+`strategies()`, and `judge_config()` return validated public mappings and do not
+create a Run.
+
+**Raises and side effects:** construction raises `ConfigurationError` for local
+configuration errors. Read methods make one public Backend GET and may raise
+`KumaAuthenticationError`, `KumaPermissionError`, or `KumaRateLimitError`.
+Credential discovery may read the environment or user credential file; the key
+is never included in `repr(client)`, and no method contacts MCP, a model, or a
 database directly.
 
 ## OpenTelemetry
@@ -171,8 +252,21 @@ Install `kuma-defuzex[otel]` before importing `kuma.otel`.
 
 <!-- api-parameters:configure_trace_evidence:end -->
 
-Returns a `TraceEvidenceCapture` for `create_run(trace_evidence=...)`. Invalid
-Providers or limits raise `ConfigurationError`.
+**Returns:** a `TraceEvidenceCapture` for
+`create_run(trace_evidence=...)`.
+
+**Preconditions:** install the `otel` extra and configure an in-process OTel SDK
+Provider that accepts span processors. Pass a non-global Provider explicitly.
+
+**Postconditions:** one KUMA processor is attached and the returned capture can
+associate ended spans with a Run. Existing instrumentation and exporters remain
+installed.
+
+**Raises and side effects:** invalid Providers or limits raise
+`ConfigurationError`. Registration mutates the selected Provider; call once for
+an explicitly managed Provider. Only bounded allowlisted data is retained;
+prompts, completions, source, raw logs, credentials, and private Rubrics remain
+excluded.
 
 <!-- api-parameters:TraceEvidenceLimits:start -->
 
@@ -185,6 +279,13 @@ Providers or limits raise `ConfigurationError`.
 | `max_total_bytes` | positive `int` | `512000` bytes | Caps the compact JSON size of all committed Trace envelopes in one Run. KUMA drops or truncates Trace data to stay within this budget; the value must still fit the smallest valid envelope. |
 
 <!-- api-parameters:TraceEvidenceLimits:end -->
+
+**Preconditions:** every value is a positive integer and `max_total_bytes` is
+large enough for the required envelope.
+
+**Postconditions:** the immutable limits make capture drop or truncate excess
+Trace data with an explicit reason instead of exceeding the configured bounds.
+Increasing a limit never broadens the privacy allowlist.
 
 ## Public result contracts
 
