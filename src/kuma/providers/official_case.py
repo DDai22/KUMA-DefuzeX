@@ -39,8 +39,8 @@ _MAX_BEHAVIOR_FIELD_BYTES = 8 * 1024
 _MAX_BEHAVIOR_SPEC_BYTES = 16 * 1024
 
 
-def _official_inputs(steps: Any, *, max_inputs: int) -> list[dict[str, str]]:
-    if not isinstance(steps, list) or not 1 <= len(steps) <= max_inputs:
+def _official_inputs(steps: Any, *, max_steps: int) -> list[dict[str, str]]:
+    if not isinstance(steps, list) or not 1 <= len(steps) <= max_steps:
         raise ProviderError(
             "The Backend returned an invalid number of Case steps",
             code="invalid_response",
@@ -95,7 +95,7 @@ def _case_matches_request(
 def _official_case_response(
     response: Mapping[str, Any],
     *,
-    max_inputs: int,
+    max_steps: int,
     requested_strategy_id: str,
     repo_fingerprint: str,
 ) -> tuple[str, str, str, str, Mapping[str, Any], list[dict[str, str]]]:
@@ -125,7 +125,7 @@ def _official_case_response(
         strategy_id,
         strategy_version,
         raw_case,
-        _official_inputs(raw_case.get("steps"), max_inputs=max_inputs),
+        _official_inputs(raw_case.get("steps"), max_steps=max_steps),
     )
 
 
@@ -291,7 +291,7 @@ def _normalized_case(
     case_id, batch_id, strategy_id, strategy_version, raw_case, inputs = (
         _official_case_response(
             response,
-            max_inputs=context.max_inputs,
+            max_steps=context.max_steps,
             requested_strategy_id=context.strategy,
             repo_fingerprint=repo_fingerprint,
         )

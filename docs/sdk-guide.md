@@ -154,7 +154,7 @@ print(report)
 | custom | custom | Fully local |
 | any | `judge=False` | Complete after the final submission without a Judge |
 
-Custom Case Providers require `max_inputs`. Provider outputs are normalized and validated before entering the Run.
+Custom Case Providers require `max_steps`. Provider outputs are normalized and validated before entering the Run.
 
 ### Run state machine
 

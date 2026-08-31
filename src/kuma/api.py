@@ -90,8 +90,8 @@ def _adapted_providers(
 ) -> tuple[CaseProvider, JudgeProvider | None, bool, bool]:
     official_case = case_provider is None
     official_judge = config.judge and judge_provider is None
-    if not official_case and config.max_inputs is None:
-        raise ConfigurationError("Custom Case Providers require max_inputs")
+    if not official_case and config.max_steps is None:
+        raise ConfigurationError("Custom Case Providers require max_steps")
 
     backend = None
     if official_case or official_judge:
@@ -139,7 +139,7 @@ def _adapted_providers(
 def _create_run_config(
     *,
     strategy: str,
-    max_inputs: int | None,
+    max_steps: int | None,
     judge: bool,
     on_failure: str,
     allow_local: bool,
@@ -154,7 +154,7 @@ def _create_run_config(
     config = resolve_create_run_config(
         {
             "strategy": strategy,
-            "max_inputs": max_inputs,
+            "max_steps": max_steps,
             "judge": judge,
             "on_failure": on_failure,
             "allow_local": allow_local,
@@ -193,7 +193,7 @@ def _case_generation_context(
         input_type="auto" if requirement is None else requirement.input_type,
         input_schema=None if requirement is None else requirement.input_schema,
         strategy=config.strategy,
-        max_inputs=config.max_inputs or 50,
+        max_steps=config.max_steps or 50,
     )
     return requirement, context
 
@@ -215,7 +215,7 @@ def _generated_case(
     return normalize_case(
         raw_case,
         run_id=run_id,
-        max_inputs=config.max_inputs or 50,
+        max_steps=config.max_steps or 50,
         required_input_type=None if requirement is None else requirement.input_type,
         required_input_schema=(
             None if requirement is None else requirement.input_schema
@@ -376,7 +376,7 @@ def create_run(
     case_provider: Any = None,
     judge_provider: Any = None,
     strategy: str = "auto",
-    max_inputs: int | None = None,
+    max_steps: int | None = None,
     judge: bool = True,
     on_failure: str = "continue",
     allow_local: bool = False,
@@ -403,7 +403,7 @@ def create_run(
             selects the official Provider when ``judge=True``.
         strategy: ``"auto"`` or an explicit server strategy ID. The SDK never
             invents or silently substitutes an unknown strategy.
-        max_inputs: Maximum number of test Inputs allowed in this Run. For
+        max_steps: Maximum number of test steps allowed in this Run. For
             example, ``3`` permits one through three Inputs and does not require
             exactly three. Custom Case Providers require an explicit positive
             value; ``None`` uses the official service policy.
@@ -447,7 +447,7 @@ def create_run(
 
     config = _create_run_config(
         strategy=strategy,
-        max_inputs=max_inputs,
+        max_steps=max_steps,
         judge=judge,
         on_failure=on_failure,
         allow_local=allow_local,

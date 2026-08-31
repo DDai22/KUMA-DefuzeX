@@ -53,7 +53,7 @@ def _ensure_json(value: Any, description: str) -> None:
         raise ProviderError(f"{description} must be JSON serializable") from exc
 
 
-def _bounded_inputs(value: Any, max_inputs: int) -> list[Any]:
+def _bounded_inputs(value: Any, max_steps: int) -> list[Any]:
     if isinstance(value, (str, bytes, Mapping, KumaInput)):
         return [value]
     if not isinstance(value, Iterable):
@@ -62,8 +62,8 @@ def _bounded_inputs(value: Any, max_inputs: int) -> list[Any]:
     inputs: list[Any] = []
     for item in iterator:
         inputs.append(item)
-        if len(inputs) > max_inputs:
-            raise ProviderError("Case Provider returned more than max_inputs")
+        if len(inputs) > max_steps:
+            raise ProviderError("Case Provider returned more than max_steps")
     return inputs
 
 
@@ -245,14 +245,14 @@ def normalize_case(
     result: Any,
     *,
     run_id: str,
-    max_inputs: int,
+    max_steps: int,
     required_input_type: str | None,
     required_input_schema: Mapping[str, Any] | None,
 ) -> Case:
     """Normalize one complete custom Case before exposing any Input."""
 
-    if max_inputs <= 0:
-        raise ProviderError("max_inputs must be positive")
+    if max_steps <= 0:
+        raise ProviderError("max_steps must be positive")
     parts = _case_parts(result)
     if parts.case_id is not None and (
         not isinstance(parts.case_id, str) or not parts.case_id.strip()
@@ -264,7 +264,7 @@ def normalize_case(
     if parts.input_schema is not None and not isinstance(parts.input_schema, Mapping):
         raise ProviderError("Case input_schema must be a mapping")
 
-    raw_sequence = _bounded_inputs(parts.inputs, max_inputs)
+    raw_sequence = _bounded_inputs(parts.inputs, max_steps)
     if not raw_sequence:
         raise ProviderError("Case Provider returned no Inputs")
     parsed = [_input_parts(value) for value in raw_sequence]

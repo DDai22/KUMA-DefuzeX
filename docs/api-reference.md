@@ -48,7 +48,7 @@ run = create_run(
 | `case_provider` | `CaseProvider \| callable \| None` | `None` | Chooses who creates the test Inputs. Leave `None` to request an official Case from KUMA; pass a callable when your application supplies its own local Case. |
 | `judge_provider` | `JudgeProvider \| callable \| None` | `None` | Chooses who evaluates all submitted results and builds the final report. Leave `None` for the official Judge, or pass a callable for your own local evaluation. Ignored when `judge=False`. |
 | `strategy` | `str` | `"auto"` | Controls how the official service chooses its Case-generation method. Keep `"auto"` unless the service has given you a specific strategy ID; an invalid ID fails instead of silently choosing something else. |
-| `max_inputs` | `int \| None` | `None` | Limits how many test steps this Run may contain. For example, `3` allows a Case with one, two, or three Inputs—it does not force exactly three. `None` lets the official service use its allowed default; custom Case Providers must receive an explicit positive limit. |
+| `max_steps` | `int \| None` | `None` | Limits how many test steps this Run may contain. For example, `3` allows a Case with one, two, or three steps—it does not force exactly three. `None` lets the official service use its allowed default; custom Case Providers must receive an explicit positive limit. |
 | `judge` | `bool` | `True` | Controls whether KUMA evaluates the Run after the last Input. Keep `True` to receive a `TestReport`; use `False` when you only want to execute and record the Case, in which case `run.report` remains `None`. |
 | `on_failure` | `str` | `"continue"` | Decides what happens after you submit a step as `failed`, `timeout`, or `aborted`. `"continue"` delivers the next Input; `"stop"` ends the Run immediately. |
 | `allow_local` | `bool` | `False` | Allows the Run to start outside Docker for trusted local development. It only bypasses the Docker requirement: it does not sandbox the Agent, expand file access, or weaken validation and privacy checks. |
@@ -132,6 +132,7 @@ invalid commit/failure states raise `InputProtocolError`.
 | --- | --- | --- |
 | `run_id` | `str` | Identifies this execution in logs, local artifacts, and public service records. |
 | `case_id` | `str` | Identifies the public Case being executed. It is safe to correlate but never exposes the private Rubric. |
+| `max_steps` | `int` | Reports how many steps the generated Case actually contains. It is at least 1 and never exceeds the explicit `create_run(max_steps=...)` limit, or the service/default limit when that argument was `None`. |
 | `state` | `RunState` | Shows which operation is currently legal, such as delivering an Input, submitting, judging, completed, or cancelled. |
 | `history` | `tuple[HistoryItem, ...]` | Contains every successfully committed Input and its matching Submission in execution order. It does not include an in-progress step. |
 | `report` | `TestReport \| None` | Holds the final Judge result after state becomes `report_ready`; it stays `None` before Judgment or when `judge=False`. |

@@ -39,7 +39,7 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 | `case_provider` | `CaseProvider \| callable \| None` | `None` | 决定由谁生成测试步骤。保留 `None` 会向 KUMA 官方服务申请 Case；传入 callable 表示由你的程序在本地提供 Case。 |
 | `judge_provider` | `JudgeProvider \| callable \| None` | `None` | 决定由谁评估全部步骤并生成最终报告。保留 `None` 使用官方 Judge；传入 callable 使用你自己的本地评估逻辑。`judge=False` 时不会使用它。 |
 | `strategy` | `str` | `"auto"` | 控制官方服务用哪种方法生成 Case。通常保留 `"auto"`；只有服务明确提供了某个 strategy ID 时才填写该 ID。无效 ID 会直接失败，不会偷偷换成其他策略。 |
-| `max_inputs` | `int \| None` | `None` | 限制本次 Run 最多包含多少个测试步骤。例如填 `3`，Case 可以有 1、2 或 3 个 Input，并不保证一定生成 3 个。`None` 表示让官方服务采用其允许的默认上限；自定义 Case Provider 必须填写一个正整数上限。 |
+| `max_steps` | `int \| None` | `None` | 限制本次 Run 最多包含多少个测试步骤。例如填 `3`，Case 可以有 1、2 或 3 个步骤，并不保证一定生成 3 个。`None` 表示让官方服务采用其允许的默认上限；自定义 Case Provider 必须填写一个正整数上限。 |
 | `judge` | `bool` | `True` | 控制最后一个 Input 提交后是否进行评估。保持 `True` 才会得到 `TestReport`；设为 `False` 只执行并记录 Case，`run.report` 会保持 `None`。 |
 | `on_failure` | `str` | `"continue"` | 决定某一步被提交为 `failed`、`timeout` 或 `aborted` 后怎么办。`"continue"` 会继续交付下一个 Input；`"stop"` 会立即结束整个 Run。 |
 | `allow_local` | `bool` | `False` | 允许在 Docker 外启动可信的本地开发 Run。它只绕过 Docker 要求，不会隔离 Agent、扩大文件权限，也不会关闭校验或隐私保护。 |
@@ -109,6 +109,7 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 | --- | --- | --- |
 | `run_id` | `str` | 标识这一次执行，可用于关联日志、本地产物和公开服务记录。 |
 | `case_id` | `str` | 标识本次正在执行的公开 Case，可安全用于关联，但不会暴露 Private Rubric。 |
+| `max_steps` | `int` | 表示最终生成的 Case 实际包含多少个步骤；至少为 1，且不会超过显式传入的 `create_run(max_steps=...)` 上限，参数为 `None` 时则不超过服务或本地默认上限。 |
 | `state` | `RunState` | 告诉你现在允许做什么，例如获取 Input、提交、等待 Judge、已经完成或已取消。 |
 | `history` | `tuple[HistoryItem, ...]` | 按执行顺序保存所有已成功提交的 Input 及对应 Submission；正在处理但尚未提交的步骤不在其中。 |
 | `report` | `TestReport \| None` | `state` 变为 `report_ready` 后保存最终 Judge 结果；Judge 尚未完成或 `judge=False` 时为 `None`。 |

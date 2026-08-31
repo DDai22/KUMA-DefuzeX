@@ -49,7 +49,7 @@ def validate_operation_wait_timeout(value: float) -> float:
 @dataclass(frozen=True, slots=True)
 class CreateRunConfig:
     strategy: str = "auto"
-    max_inputs: int | None = None
+    max_steps: int | None = None
     judge: bool = True
     on_failure: str = "continue"
     allow_local: bool = False
@@ -64,12 +64,12 @@ class CreateRunConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.strategy, str) or not self.strategy.strip():
             raise ConfigurationError("strategy must be a non-empty string")
-        if self.max_inputs is not None and (
-            isinstance(self.max_inputs, bool)
-            or not isinstance(self.max_inputs, int)
-            or self.max_inputs <= 0
+        if self.max_steps is not None and (
+            isinstance(self.max_steps, bool)
+            or not isinstance(self.max_steps, int)
+            or self.max_steps <= 0
         ):
-            raise ConfigurationError("max_inputs must be a positive integer")
+            raise ConfigurationError("max_steps must be a positive integer")
         if not isinstance(self.on_failure, str) or self.on_failure not in {
             "continue",
             "stop",

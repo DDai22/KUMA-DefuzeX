@@ -81,7 +81,7 @@ class Run:
         self.run_id = run_id
         self.case_id = case.case_id or ""
         self.strategy = strategy
-        self.max_inputs = len(case.inputs)
+        self.max_steps = len(case.inputs)
         self._case = case
         self._runtime = runtime
         self._judge_provider = judge_provider

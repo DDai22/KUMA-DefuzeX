@@ -30,7 +30,7 @@ class CaseGenerationContext:
     input_type: str
     input_schema: Mapping[str, Any] | None
     strategy: str
-    max_inputs: int
+    max_steps: int
     agent_description: str | None = None
     requirement_sections: Mapping[str, str] = field(default_factory=dict)
 
@@ -46,9 +46,9 @@ class CaseGenerationContext:
             "requirement_sections",
             MappingProxyType(dict(self.requirement_sections)),
         )
-        if self.max_inputs <= 0:
+        if self.max_steps <= 0:
             raise ConfigurationError(
-                "Custom Case Providers require a positive max_inputs"
+                "Custom Case Providers require a positive max_steps"
             )
 
 

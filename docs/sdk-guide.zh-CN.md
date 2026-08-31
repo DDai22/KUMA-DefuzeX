@@ -154,7 +154,7 @@ print(report)
 | 自定义 | 自定义 | 完全本地 |
 | 任意 | `judge=False` | 最后一次提交后结束，不运行 Judge |
 
-自定义 Case Provider 必须设置 `max_inputs`。Provider 输出进入 Run 前会被归一化并验证。
+自定义 Case Provider 必须设置 `max_steps`。Provider 输出进入 Run 前会被归一化并验证。
 
 ### Run 状态机
 
