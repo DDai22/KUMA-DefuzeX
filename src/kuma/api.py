@@ -35,9 +35,22 @@ from .transport.backend import DEFAULT_BASE_URL, BackendClient
 def configure(*, api_key: str) -> Path:
     """Validate and atomically persist an API key in the user credential store.
 
-    The function returns the written path and performs no network request.
-    ``KUMA_CONFIG_HOME`` can redirect the user-level location for isolated
-    development and tests.
+    Args:
+        api_key: Printable ASCII KUMA credential beginning with ``dfx_``. The
+            encoded value must be at most 512 bytes and contain no whitespace or
+            control characters.
+
+    Returns:
+        Absolute path of the atomically written ``credentials.json`` file.
+
+    Raises:
+        ConfigurationError: The key format is invalid or a credential location
+            cannot be resolved.
+        OSError: The credential directory or file cannot be written.
+
+    This function performs no network request. ``KUMA_CONFIG_HOME`` redirects
+    the user-level location for isolated development and tests. The file contains
+    the credential, so callers must not print or commit it.
     """
 
     return write_api_key(api_key)
@@ -379,21 +392,55 @@ def create_run(
 ) -> Run:
     """Create one complete Case and return its synchronous strict-handshake Run.
 
-    Official Providers use the deployed authenticated Backend endpoints. Custom
-    Providers remain entirely local unless paired with an official Provider.
-    Runtime, requirement, repository metadata, Case output, and Provider
-    combinations are validated before the first Input can be delivered.
+    Args:
+        repo_path: Repository root visible to the Agent. Defaults to the current
+            directory and is resolved to an absolute path.
+        requirement_path: UTF-8 requirement file used for Case generation.
+            Official Case generation requires it; a custom Provider may opt out.
+        case_provider: ``CaseProvider`` or compatible callable. ``None`` selects
+            the official authenticated Provider.
+        judge_provider: ``JudgeProvider`` or compatible callable. ``None``
+            selects the official Provider when ``judge=True``.
+        strategy: ``"auto"`` or an explicit server strategy ID. The SDK never
+            invents or silently substitutes an unknown strategy.
+        max_inputs: Positive upper bound for Case Inputs. Custom Case Providers
+            require an explicit value; ``None`` uses the official service policy.
+        judge: Whether to request a final Judgment after the last Submission.
+        on_failure: ``"continue"`` advances after a non-completed Submission;
+            ``"stop"`` closes the Run immediately.
+        allow_local: Permit a trusted non-Docker development run. It does not
+            create a sandbox or relax privacy and protocol validation.
+        track_files: Capture bounded file metadata before and after each Input.
+        upload_diff: Include bounded text diffs; requires ``track_files=True``
+            and may expose repository text to the configured Judge.
+        save_local: Persist structured Submission records beneath
+            ``.kuma/runs/<run_id>/`` using atomic replacement.
+        allow_sensitive: Permit ordinary Evidence that triggers the sensitive
+            scanner. It never relaxes the OpenTelemetry allowlist.
+        timeout: Positive finite per-request HTTP timeout in seconds.
+        operation_wait_timeout: Positive finite total wait in seconds for one
+            official asynchronous Case or Judge operation.
+        max_retries: Automatic transient HTTP retries, inclusive range 0 through
+            5. Idempotent POST retries reuse the same request key.
+        api_key: Per-call ``dfx_`` credential. ``None`` falls back to
+            ``KUMA_API_KEY`` and then the user credential file.
+        trace_evidence: Capture returned by
+            :func:`kuma.otel.configure_trace_evidence`. ``None`` attempts to
+            reuse a compatible configured global OTel Provider and otherwise
+            records a non-blocking runtime warning.
 
-    ``allow_local`` is an explicit development escape hatch; the default runtime
-    requires SDK and Agent to share a Docker container. When ``trace_evidence``
-    is omitted, an already-configured global OpenTelemetry SDK provider is
-    attached automatically; missing or unconfigured OTel only records a runtime
-    warning. Passing a capture from :func:`kuma.otel.configure_trace_evidence`
-    overrides automatic discovery.
+    Returns:
+        A synchronous :class:`kuma.run.Run` in ``ready`` state.
 
-    The caller owns Agent execution and must alternate :meth:`Run.get_input`
-    with exactly one :meth:`Run.submit` until no Inputs remain, or call
-    :meth:`Run.cancel` when abandoning the Run.
+    Raises:
+        KumaError: Configuration, authentication, Provider, runtime isolation,
+            Case validation, or public service validation fails. The concrete
+            subclass exposes stable ``code`` and ``retryable`` fields.
+
+    Official Providers use only the public Backend. Custom Providers remain
+    local unless paired with an official Provider. The caller owns Agent
+    execution and must alternate :meth:`Run.get_input` with one
+    :meth:`Run.submit`, or call :meth:`Run.cancel` when abandoning the Run.
     """
 
     config = _create_run_config(

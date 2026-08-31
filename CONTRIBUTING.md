@@ -21,7 +21,8 @@ run the canonical checks:
 ```bash
 python -m ruff format --check --exclude "*.ipynb" .
 python -m ruff check --exclude "*.ipynb" .
-python -m compileall -q src examples
+python tools/verify_public_api_docs.py
+python -m compileall -q src examples tools
 kuma quickstart
 python examples/minimal_local.py
 python -m build
@@ -43,6 +44,13 @@ Maintainers run those private checks before accepting a release.
 - Never commit API keys, `.env` files, local paths, private Rubrics, model prompts,
   service addresses, databases, or user data.
 - Explain compatibility, security, and privacy effects in the pull request.
+- Keep public API documentation synchronized with signatures and behavior. Each
+  argument must state its type, required/default value, units or accepted range,
+  sentinel meaning, and security-relevant effects. Document returns, stable
+  exceptions, state/resource side effects, retries, and a minimal verified
+  example where those details are not obvious. Run
+  `python tools/verify_public_api_docs.py`; it detects signature/table drift but
+  does not replace human semantic review.
 
 By submitting a contribution, you agree that it is licensed under the Apache
 License 2.0. Report security issues privately as described in

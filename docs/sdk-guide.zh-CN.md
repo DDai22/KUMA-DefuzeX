@@ -175,28 +175,7 @@ print(report)
 
 ### `create_run()` 参数
 
-| 参数 | 默认值 | 用途 |
-|---|---:|---|
-| `repo_path` | `"."` | Agent 被测仓库 |
-| `requirement_path` | `None` | Requirement 文件；官方 Case Provider 必填 |
-| `case_provider` | `None` | 自定义 Case Provider；省略时使用官方 Provider |
-| `judge_provider` | `None` | 自定义 Judge Provider；启用 Judge 且省略时使用官方 Provider |
-| `strategy` | `"auto"` | 自动选择或显式 strategy ID |
-| `max_inputs` | `None` | 正数 Input 上限；自定义 Case 必填 |
-| `judge` | `True` | 最后一个 Input 后运行已配置的 Judge |
-| `on_failure` | `"continue"` | Submission 失败后继续或停止 |
-| `allow_local` | `False` | 允许在 Docker 外进行可信开发运行 |
-| `track_files` | `True` | 在每个 Input 前后采集有界文件元数据 |
-| `upload_diff` | `False` | 在文件 Evidence 中加入有界文本 diff |
-| `save_local` | `False` | 将 Submission 记录保存到 `.kuma/runs/` |
-| `allow_sensitive` | `False` | 显式覆盖普通 Evidence 扫描；不会放宽 Trace allowlist |
-| `timeout` | `300.0` | 单次公开 HTTP 请求超时，单位为秒 |
-| `operation_wait_timeout` | `600.0` | 单次官方 Case 或 Judge operation 的总等待上限 |
-| `max_retries` | `2` | 瞬态失败自动重试次数，取值 0 至 5 |
-| `api_key` | `None` | 优先级最高的本次调用凭证 |
-| `trace_evidence` | `None` | `configure_trace_evidence()` 返回的 capture |
-
-`on_failure` 只接受 `continue` 或 `stop`。Python API 保持同步，不支持 `wait=False`。
+[Python API 参考](api-reference.zh-CN.md#create_run)是每个参数的类型、默认值、允许值、副作用、返回值和失败行为的权威说明。`on_failure` 只接受 `continue` 或 `stop`。Python API 保持同步，不支持 `wait=False`。
 
 ## Evidence、文件、日志与隐私
 
@@ -325,6 +304,7 @@ operation 超时只保留有界恢复元数据，不保存凭证、请求正文�
 ## 参考
 
 - [架构](architecture.md)
+- [Python API 参考](api-reference.zh-CN.md)
 - [公开 API Contract](api-contract.md)
 - [Runtime Evidence 合同](runtime-evidence.md)
 - [最小本地示例](../examples/minimal_local.py)

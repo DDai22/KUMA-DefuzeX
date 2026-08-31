@@ -58,7 +58,22 @@ _MIN_TRACE_EVIDENCE_BYTES = json_size(_evidence_payload("r", "c", "i"))
 
 @dataclass(frozen=True, slots=True)
 class TraceEvidenceLimits:
-    """Bound capture; total bytes include compact envelopes committed per Run."""
+    """Resource limits for bounded in-process Trace Evidence.
+
+    Args:
+        max_spans: Maximum ended spans retained per Run; defaults to 200.
+        max_attributes: Maximum allowlisted attributes retained per span;
+            defaults to 32.
+        max_events_per_span: Maximum allowlisted events retained per span;
+            defaults to 20.
+        max_text_length: Maximum Unicode characters retained for one allowed text
+            value before truncation; defaults to 256.
+        max_total_bytes: Maximum compact JSON bytes across all Trace Evidence
+            envelopes committed by one Run; defaults to 512,000.
+
+    Every limit must be a positive integer. ``max_total_bytes`` must fit the
+    smallest valid envelope or construction raises ``ConfigurationError``.
+    """
 
     max_spans: int = 200
     max_attributes: int = 32
