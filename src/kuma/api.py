@@ -403,8 +403,10 @@ def create_run(
             selects the official Provider when ``judge=True``.
         strategy: ``"auto"`` or an explicit server strategy ID. The SDK never
             invents or silently substitutes an unknown strategy.
-        max_inputs: Positive upper bound for Case Inputs. Custom Case Providers
-            require an explicit value; ``None`` uses the official service policy.
+        max_inputs: Maximum number of test Inputs allowed in this Run. For
+            example, ``3`` permits one through three Inputs and does not require
+            exactly three. Custom Case Providers require an explicit positive
+            value; ``None`` uses the official service policy.
         judge: Whether to request a final Judgment after the last Submission.
         on_failure: ``"continue"`` advances after a non-completed Submission;
             ``"stop"`` closes the Run immediately.

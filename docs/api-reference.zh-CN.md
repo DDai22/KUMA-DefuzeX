@@ -14,9 +14,9 @@ credential_path = configure(api_key="dfx_your_key_here")
 
 <!-- api-parameters:configure:start -->
 
-| 参数 | 类型 | 必填/默认值 | 用法 |
+| 参数 | 类型 | 必填/默认值 | 它控制什么、什么时候填写 |
 | --- | --- | --- | --- |
-| `api_key` | `str` | 必填 | 以 `dfx_` 开头的可打印 ASCII KUMA 凭证；编码后最多 512 字节，不允许空白或控制字符。 |
+| `api_key` | `str` | 必填 | 保存 KUMA 调用官方 Case/Judge 时使用的凭证。填写平台签发的 `dfx_...` 值；必须是可打印 ASCII，不能包含空白或控制字符，编码后最多 512 字节。完全本地运行不需要配置它。 |
 
 <!-- api-parameters:configure:end -->
 
@@ -32,26 +32,26 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:create_run:start -->
 
-| 参数 | 类型 | 必填/默认值 | 用法 |
+| 参数 | 类型 | 必填/默认值 | 它控制什么、什么时候填写 |
 | --- | --- | --- | --- |
-| `repo_path` | `str \| os.PathLike[str]` | `"."` | Agent 可见的仓库根目录；会展开并解析成绝对路径。 |
-| `requirement_path` | `str \| os.PathLike[str] \| None` | `None` | UTF-8 Requirement 文件。官方 Case 必须提供；自定义 Provider 可明确不要求。 |
-| `case_provider` | `CaseProvider \| callable \| None` | `None` | 自定义 Case 来源；`None` 使用官方鉴权 Provider。 |
-| `judge_provider` | `JudgeProvider \| callable \| None` | `None` | 自定义 Judge；当 `judge=True` 时，`None` 使用官方 Provider。 |
-| `strategy` | `str` | `"auto"` | `"auto"` 让服务选择；其他非空值是显式策略 ID。未知策略不会被静默替换。 |
-| `max_inputs` | `int \| None` | `None` | 正整数 Case Input 上限。自定义 Case Provider 必须提供；官方模式省略时遵循公开服务策略。 |
-| `judge` | `bool` | `True` | 最后一次 Submission 后执行 Judge；`False` 时 `run.report` 保持 `None`。 |
-| `on_failure` | `str` | `"continue"` | `"continue"` 在 failed/timeout/aborted 后继续；`"stop"` 立即结束 Run。 |
-| `allow_local` | `bool` | `False` | 允许可信的非 Docker 开发运行；不会创建沙箱，也不会放松校验或隐私规则。 |
-| `track_files` | `bool` | `True` | 每个 Input 前后采集有界文件元数据。 |
-| `upload_diff` | `bool` | `False` | 加入有界文本 diff；要求 `track_files=True`，并可能把仓库文本交给所配置的 Judge。 |
-| `save_local` | `bool` | `False` | 原子保存 Submission JSON 到 `.kuma/runs/<run_id>/`；不替代官方提交。 |
-| `allow_sensitive` | `bool` | `False` | 允许普通 Evidence 中被扫描器命中的内容；绝不放宽 OTel allowlist。 |
-| `timeout` | `float` | `300.0` 秒 | 单次公网 HTTP 尝试的正有限超时，不是整个 operation 的等待时间。 |
-| `operation_wait_timeout` | `float` | `600.0` 秒 | 一次官方异步 Case/Judge operation 的正有限总等待上限；超时保留恢复元数据。 |
-| `max_retries` | `int` | `2` | 自动瞬态重试次数，范围 0–5；幂等 POST 重试复用同一个 Key。 |
-| `api_key` | `str \| None` | `None` | 本次调用的 `dfx_` Key；解析顺序为本参数、`KUMA_API_KEY`、用户凭证文件。 |
-| `trace_evidence` | `TraceEvidenceCapture \| None` | `None` | `configure_trace_evidence()` 返回的显式 capture；省略时安全尝试复用全局 Provider，否则仅记录非阻断 warning。 |
+| `repo_path` | `str \| os.PathLike[str]` | `"."` | 指定“这次要测试哪个仓库”。KUMA 会读取该目录下的有界元数据，并在启用文件追踪时观察其中的文件变化。如果 Python 正在仓库根目录运行，保留 `"."` 即可。 |
+| `requirement_path` | `str \| os.PathLike[str] \| None` | `None` | 指向描述“Agent 要做什么、KUMA 要测试哪些行为”的 UTF-8 文件。使用官方 Case 时必须填写；只有自定义 Case Provider 明确不需要 Requirement 时才可省略。 |
+| `case_provider` | `CaseProvider \| callable \| None` | `None` | 决定由谁生成测试步骤。保留 `None` 会向 KUMA 官方服务申请 Case；传入 callable 表示由你的程序在本地提供 Case。 |
+| `judge_provider` | `JudgeProvider \| callable \| None` | `None` | 决定由谁评估全部步骤并生成最终报告。保留 `None` 使用官方 Judge；传入 callable 使用你自己的本地评估逻辑。`judge=False` 时不会使用它。 |
+| `strategy` | `str` | `"auto"` | 控制官方服务用哪种方法生成 Case。通常保留 `"auto"`；只有服务明确提供了某个 strategy ID 时才填写该 ID。无效 ID 会直接失败，不会偷偷换成其他策略。 |
+| `max_inputs` | `int \| None` | `None` | 限制本次 Run 最多包含多少个测试步骤。例如填 `3`，Case 可以有 1、2 或 3 个 Input，并不保证一定生成 3 个。`None` 表示让官方服务采用其允许的默认上限；自定义 Case Provider 必须填写一个正整数上限。 |
+| `judge` | `bool` | `True` | 控制最后一个 Input 提交后是否进行评估。保持 `True` 才会得到 `TestReport`；设为 `False` 只执行并记录 Case，`run.report` 会保持 `None`。 |
+| `on_failure` | `str` | `"continue"` | 决定某一步被提交为 `failed`、`timeout` 或 `aborted` 后怎么办。`"continue"` 会继续交付下一个 Input；`"stop"` 会立即结束整个 Run。 |
+| `allow_local` | `bool` | `False` | 允许在 Docker 外启动可信的本地开发 Run。它只绕过 Docker 要求，不会隔离 Agent、扩大文件权限，也不会关闭校验或隐私保护。 |
+| `track_files` | `bool` | `True` | 让 KUMA 在每个 Input 前后比较仓库文件，从而告诉 Judge 哪些文件被创建、修改、删除或重命名。文件变化与评估无关或无法观察时可设为 `False`。 |
+| `upload_diff` | `bool` | `False` | 除路径、哈希、大小和变化类型外，再把有界的实际文本改动加入 Evidence。只有 Judge 必须查看代码差异且仓库文本允许披露时才开启；要求 `track_files=True`。 |
+| `save_local` | `bool` | `False` | 把每个已成功提交的 Submission 额外保存为 `.kuma/runs/<run_id>/` 下的 JSON，便于调试和审计。它只是本地副本，不能替代提交给官方 Judge。 |
+| `allow_sensitive` | `bool` | `False` | 当普通 Evidence 被扫描器判断为可能敏感时，是否仍允许继续。默认应保持 `False`；只有人工确认内容可以披露时才开启，而且它永远不能让秘密进入 OTel Trace Evidence。 |
+| `timeout` | `float` | `300.0` 秒 | 限制一次连接 KUMA 公网服务的 HTTP 请求最多等待多久。调小后单次网络失败会更快返回；它不限制 Case 生成或 Judge 的总等待时间。 |
+| `operation_wait_timeout` | `float` | `600.0` 秒 | 限制一次官方 Case/Judge operation 连同轮询在内总共等待多久。超时后 KUMA 抛出可重试错误，并保留安全恢复信息，以便继续同一个 operation。 |
+| `max_retries` | `int` | `2` | 设置一次瞬态 HTTP 失败后最多再尝试几次，允许 0–5。重试会复用同一个幂等键，不会故意创建第二个 Case/Judge operation。 |
+| `api_key` | `str \| None` | `None` | 为“这一个 Run”提供官方服务凭证，用于临时覆盖环境变量或已保存凭证。`None` 时依次读取 `KUMA_API_KEY` 和用户凭证文件；Case/Judge 都是本地 Provider 时不需要 Key。 |
+| `trace_evidence` | `TraceEvidenceCapture \| None` | `None` | 为本次 Run 指定一份 OTel Trace 采集器及其资源上限。需要显式控制时传入 `configure_trace_evidence()` 的返回值；`None` 时 KUMA 会尝试复用兼容的全局 Provider，没有则继续运行并记录非阻断 warning。 |
 
 <!-- api-parameters:create_run:end -->
 
@@ -63,9 +63,9 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:get_input:start -->
 
-| 参数 | 类型 | 必填/默认值 | 用法 |
+| 参数 | 类型 | 必填/默认值 | 它控制什么、什么时候填写 |
 | --- | --- | --- | --- |
-| `full` | `bool` | `False` | `False` 仅返回 JSON-compatible payload；`True` 返回不可变 `KumaInput` 元数据和 payload。 |
+| `full` | `bool` | `False` | 决定 Agent 能拿到多少信息。保持 `False` 只返回真正要执行的任务 payload；需要 run/case/input ID、序号、payload 类型、约束或扩展字段时设为 `True`，返回完整且不可变的 `KumaInput`。 |
 
 <!-- api-parameters:get_input:end -->
 
@@ -75,13 +75,13 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:submit:start -->
 
-| 参数 | 类型 | 必填/默认值 | 用法 |
+| 参数 | 类型 | 必填/默认值 | 它控制什么、什么时候填写 |
 | --- | --- | --- | --- |
-| `output` | 有限 JSON-compatible 值 | 省略 | Agent 结果。显式值优先；仅当受支持 OTel instrumentation 提供最终 Agent/Workflow 输出时，completed Submission 才能省略。显式 `None` 不是成功结果。 |
-| `status` | `str` | `"completed"` | 只能是 `"completed"`、`"failed"`、`"timeout"` 或 `"aborted"`。 |
-| `error` | `str \| None` | `None` | 非 completed Submission 的安全摘要；不得包含 secret 或原始 traceback。 |
-| `logs` | `list[str \| Path] \| None` | `None` | 采集有界新增内容的日志文件；必须启用 Evidence，且仍受目录与敏感数据校验。 |
-| `wait` | `bool` | `True` | 最后一次 Submission 触发 Judge 时必须保持 `True`；公共 API 不暴露后台轮询。 |
+| `output` | 有限 JSON-compatible 值 | 省略 | 提交当前 Input 的 Agent 结果，Judge 会评估这个值。普通接入应明确传入。只有受支持 OTel instrumentation 已捕获真实最终 Agent/Workflow 输出时才能省略；显式传 `None` 不算成功结果。 |
+| `status` | `str` | `"completed"` | 记录当前步骤实际如何结束：有可用结果用 `"completed"`，Agent 报错用 `"failed"`，超过执行期限用 `"timeout"`，主动终止用 `"aborted"`。该值也会触发 `on_failure` 的继续/停止策略。 |
+| `error` | `str \| None` | `None` | 当 `status` 不是 `"completed"` 时，提供一段用户可读的失败摘要。它会进入 Submission Evidence，因此只能写安全概述，不能放 secret、文件正文或原始 traceback。 |
+| `logs` | `list[str \| Path] \| None` | `None` | 指定哪些本地日志文件的“新增部分”要随本次 Submission 一起采集。KUMA 只读取有界增量，并继续做路径与敏感数据校验；不需要日志时保留 `None`。 |
+| `wait` | `bool` | `True` | 让最后一次 `submit()` 同步等待 Judge，直到拿到报告或错误才返回。当前公共 API 必须保持 `True`，不提供后台轮询模式。 |
 
 <!-- api-parameters:submit:end -->
 
@@ -91,9 +91,9 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:judge:start -->
 
-| 参数 | 类型 | 必填/默认值 | 用法 |
+| 参数 | 类型 | 必填/默认值 | 它控制什么、什么时候填写 |
 | --- | --- | --- | --- |
-| `wait` | `bool` | `True` | 必须为 `True`；官方 operation 在内部同步、有界轮询。 |
+| `wait` | `bool` | `True` | 让 `judge()` 一直等到最终报告或错误。公共 Python API 是同步接口，所以必须保持 `True`；最长等待时间通过 `create_run(operation_wait_timeout=...)` 控制。 |
 
 <!-- api-parameters:judge:end -->
 
@@ -105,14 +105,14 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 ### 只读属性
 
-| 属性 | 类型 | 含义 |
+| 属性 | 类型 | 它告诉你什么 |
 | --- | --- | --- |
-| `run_id` | `str` | 当前 Run 的公开标识。 |
-| `case_id` | `str` | 公开 Case 标识，不包含 Private Rubric。 |
-| `state` | `RunState` | 当前生命周期状态。 |
-| `history` | `tuple[HistoryItem, ...]` | 已提交的不可变 Input/Submission 对。 |
-| `report` | `TestReport \| None` | `report_ready` 后的最终验证 Judgment。 |
-| `runtime_warnings` | `tuple[str, ...]` | 非致命 Evidence 降级稳定代码。 |
+| `run_id` | `str` | 标识这一次执行，可用于关联日志、本地产物和公开服务记录。 |
+| `case_id` | `str` | 标识本次正在执行的公开 Case，可安全用于关联，但不会暴露 Private Rubric。 |
+| `state` | `RunState` | 告诉你现在允许做什么，例如获取 Input、提交、等待 Judge、已经完成或已取消。 |
+| `history` | `tuple[HistoryItem, ...]` | 按执行顺序保存所有已成功提交的 Input 及对应 Submission；正在处理但尚未提交的步骤不在其中。 |
+| `report` | `TestReport \| None` | `state` 变为 `report_ready` 后保存最终 Judge 结果；Judge 尚未完成或 `judge=False` 时为 `None`。 |
+| `runtime_warnings` | `tuple[str, ...]` | 保存不会阻断 Run 的 Evidence 缺口代码，例如自动 Trace 不可用；可用它向用户提示采集不完整。 |
 
 ## `KumaClient`
 
@@ -120,12 +120,12 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:KumaClient:start -->
 
-| 参数 | 类型 | 必填/默认值 | 用法 |
+| 参数 | 类型 | 必填/默认值 | 它控制什么、什么时候填写 |
 | --- | --- | --- | --- |
-| `api_key` | `str \| None` | `None` | 可选 `dfx_` Key，沿用环境变量/凭证文件回退；读取方法必须最终取得 Key。 |
-| `base_url` | `str` | KUMA 公开 URL | 公开 Backend API base；远程地址必须 HTTPS，本地集成可用 loopback HTTP，拒绝 URL credentials。 |
-| `timeout` | `float` | `30.0` 秒 | 每次公开配置 GET 请求的正有限超时；不控制 Run operation 的总等待时间。 |
-| `transport` | 公共 transport callable \| `None` | `None` | 测试/集成 HTTP 边界；普通用户不要传。 |
+| `api_key` | `str \| None` | `None` | 用于读取账号权限、策略和 Judge 配置等公开信息。可以只给这个 client 传 Key；保留 `None` 时会读取 `KUMA_API_KEY`，再读取已保存凭证。 |
+| `base_url` | `str` | KUMA 公开 URL | 决定这些 GET 请求发往哪个公开 Backend。普通用户保持默认即可；远程地址必须 HTTPS，本地集成可用 loopback HTTP，含用户名或密码的 URL 会被拒绝。 |
+| `timeout` | `float` | `30.0` 秒 | 设置每次配置 GET 最多等待响应多久，超时就失败；它不控制 Case/Judge operation 的轮询总时长。 |
+| `transport` | 公共 transport callable \| `None` | `None` | 用显式 callable 替换真实 HTTP，供测试或受控集成使用。普通应用应保留 `None`。 |
 
 <!-- api-parameters:KumaClient:end -->
 
@@ -137,10 +137,10 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:configure_trace_evidence:start -->
 
-| 参数 | 类型 | 必填/默认值 | 用法 |
+| 参数 | 类型 | 必填/默认值 | 它控制什么、什么时候填写 |
 | --- | --- | --- | --- |
-| `tracer_provider` | OTel SDK Provider \| `None` | `None` | 现有且提供 `add_span_processor` 的 Provider；`None` 选择当前全局 Provider，KUMA 绝不替换它。 |
-| `limits` | `TraceEvidenceLimits \| None` | `None` | 有界采集配置；`None` 使用下列默认值。 |
+| `tracer_provider` | OTel SDK Provider \| `None` | `None` | 指定 KUMA 从哪个同进程 OTel Provider 接收已结束的 span。应用使用非全局 Provider 时明确传入；`None` 使用当前全局 Provider。KUMA 只添加 processor，绝不会替换或重置它。 |
+| `limits` | `TraceEvidenceLimits \| None` | `None` | 控制一个 Run 最多保留多少 Trace 数据。需要更严格的内存或隐私预算时传入自定义限制；`None` 使用下方有界默认值。 |
 
 <!-- api-parameters:configure_trace_evidence:end -->
 
@@ -148,13 +148,13 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 <!-- api-parameters:TraceEvidenceLimits:start -->
 
-| 参数 | 类型 | 必填/默认值 | 用法 |
+| 参数 | 类型 | 必填/默认值 | 达到上限后会怎样 |
 | --- | --- | --- | --- |
-| `max_spans` | 正 `int` | `200` | 单 Run 最多保留的结束 span 数。 |
-| `max_attributes` | 正 `int` | `32` | 每个 span 最多保留的 allowlisted attributes 数。 |
-| `max_events_per_span` | 正 `int` | `20` | 每个 span 最多保留的 allowlisted events 数。 |
-| `max_text_length` | 正 `int` | `256` 字符 | 单个允许文本值最多保留的 Unicode 字符数。 |
-| `max_total_bytes` | 正 `int` | `512000` 字节 | 单 Run 已提交 Trace envelope 的紧凑 JSON 总字节上限；必须能容纳最小 envelope。 |
+| `max_spans` | 正 `int` | `200` | 一个 Run 保留到该数量后，后续已结束 span 会被丢弃，并在 Evidence 中记录 dropped，而不是让内存无限增长。 |
+| `max_attributes` | 正 `int` | `32` | 每个 span 最多保留这么多个安全 allowlist 属性；其余属性被丢弃并计数。无论数字多大，敏感属性仍会被拒绝。 |
+| `max_events_per_span` | 正 `int` | `20` | 每个 span 最多保留这么多个安全 OTel event；更晚的 event 会被丢弃并记录。 |
+| `max_text_length` | 正 `int` | `256` 字符 | 每个允许保留的文本值超过该 Unicode 字符数后会被截断，并记录 truncated 状态。 |
+| `max_total_bytes` | 正 `int` | `512000` 字节 | 一个 Run 的全部已提交 Trace envelope 紧凑 JSON 合计不能超过该值；KUMA 会丢弃或截断 Trace 数据来守住预算，但该值本身必须能容纳最小合法 envelope。 |
 
 <!-- api-parameters:TraceEvidenceLimits:end -->
 
