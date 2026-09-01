@@ -31,6 +31,25 @@ python -m pip install "kuma-defuzex==0.1.0"
 kuma quickstart
 ```
 
+## 真实全流程示例
+
+可运行的 [Docker 示例](examples/full_stack/docker_user_flow.py)会完成真实流程：获取官方 Case、用 mini-SWE-agent 执行每个步骤、提交 Evidence、取得官方 Judgment，并保存为 `.kuma/mini-swe-agent/judge-report.json`。
+
+按照[简短指南](examples/full_stack/USER_GUIDE.md)准备一次性 Agent 工作区，设置 `KUMA_BASE_URL`、`KUMA_API_KEY` 和 `DEEPSEEK_API_KEY`，然后在本仓库执行：
+
+```bash
+docker build -f examples/full_stack/Dockerfile.user-flow -t kuma-user-flow .
+workspace=/absolute/path/to/prepared-workspace
+docker run --rm \
+  --env KUMA_BASE_URL \
+  --env KUMA_API_KEY \
+  --env DEEPSEEK_API_KEY \
+  --mount "type=bind,source=$workspace,target=/workspace" \
+  kuma-user-flow
+```
+
+该流程会调用真实服务，可能消耗服务 Credit 和模型预算。KUMA 只需要公网 Backend 地址和用户密钥，不需要私有 Core 地址。
+
 ## 核心能力
 
 - 同步且不绑定框架的 Case 与 Judge 流程。
