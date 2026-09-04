@@ -43,7 +43,7 @@ flowchart TD
     Transport["transport/backend.py<br/>bounded public HTTP transport"]
     Normalize["providers/normalization.py<br/>Case / report normalization"]
     Run["run.py<br/>strict synchronous state machine"]
-    Operations["transport/operations.py<br/>bounded poll + resume metadata"]
+    Operations["transport/operations.py + request_records.py<br/>bounded poll + cross-process recovery"]
     Contracts["contracts.py<br/>immutable public values"]
     Runtime["runtime.py<br/>mode, lock, workspace"]
     Evidence["evidence/tracking/*<br/>snapshot, diff, logs, transaction"]
@@ -94,7 +94,7 @@ flowchart TD
 
 `CaseProvider.generate_case(CaseGenerationContext)` 接收本地 requirement、公开 Repo Meta、input 类型/schema、strategy 和数量上限。输出只能是文档列出的 `Case`、带必需 `inputs` 的 Case mapping、单个文本/`KumaInput` 或 `list`/`tuple` Inputs；任意 mapping fallback 和任意 iterable 不再进入 Input。`normalize_case()` 在交付第一个 Input 前递归拒绝私有评测字段，再构造完整 `Case`。
 
-`JudgeProvider.judge(JudgeContext)` 接收已归一化 Case、不可变 History、Run status 和 Evidence summary。输出必须经 `normalize_report()` 转成 `TestReport`。Provider 抛出的 `KumaError` 保持类型；其他异常被包装成不泄漏内部异常文本的 `ProviderError`。
+`JudgeProvider.judge(JudgeContext)` 接收已归一化 Case、不可变 History、Run status 和 Evidence summary。输出必须经 `normalize_report()` 转成 `TestReport`。Provider 抛出的 `KumaError` 保持类型；其他异常按官方或自定义 Provider 分别包装成不泄漏内部异常文本的 `ProviderError`。自定义 Case 不允许携带调用方 Rubric；官方 Judge 直接接收 closed 公共 Case，Core 独占私有评价策略。
 
 官方 Provider 是这两个端口的 HTTP 实现：
 
@@ -214,7 +214,7 @@ stateDiagram-v2
 2. History 中 `KumaInput` 与 `Submission` 的 run/case/input ID 必须一致。
 3. Input payload 与 output 在记录前必须是无 NaN/Infinity、无循环且最多 256 层容器的 JSON 值；共享无环子对象合法。completed submission 必须有 output，结构错误必须在 Evidence/persistence/network 前以稳定安全错误返回。
 4. Evidence 先 prepare，History 成功记录后才 commit。Submission 构造或 History 记录失败会 abort，不推进日志 offset、Trace Run 预算或本地 final file。
-5. Judge 对 Python 调用者保持同步；Official Provider 内部 POST v2 operation 并轮询终态。Judge 失败只把状态恢复为 `completed`，不删除真实 History，也不伪造报告。超时保留仅含 operation 元数据的恢复文件。
+5. Judge 对 Python 调用者保持同步；Official Provider 内部 POST v2 operation 并轮询终态。Judge 失败只把状态恢复为 `completed`，不删除真实 History，也不伪造报告。`.kuma/requests/` 保留不含请求正文与凭证的终态记录；已接受响应丢失时通过客户端请求 ID 找回 operation，再仅用 GET 恢复，Judge 报告写入 `.kuma/reports/`。
 6. cancel/finish 释放 OS lock 和临时 workspace；cancel 同时丢弃 active Trace association，迟到 span 不得串入下一 Run。
 
 ## Tracking、Evidence 与隐私

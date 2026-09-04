@@ -21,6 +21,7 @@ from .repository.tool_capability_io import (
     save_agent_capabilities,
     scan_agent_tool_manifest,
 )
+from .requests import list_requests, resume_request, show_request
 
 
 def _emit(data: Any) -> None:
@@ -141,6 +142,32 @@ def cmd_strategies_suggest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_requests_list(args: argparse.Namespace) -> int:
+    """Print bounded non-secret request summaries from one repository ledger."""
+    _emit([record.to_dict() for record in list_requests(args.repo_path)])
+    return 0
+
+
+def cmd_requests_show(args: argparse.Namespace) -> int:
+    """Print one exact local request summary without contacting the Backend."""
+    _emit(show_request(args.client_request_id, repo_path=args.repo_path).to_dict())
+    return 0
+
+
+def cmd_requests_resume(args: argparse.Namespace) -> int:
+    """Resume one addressable Backend operation and print its terminal summary."""
+    base_url = args.base_url or os.environ.get("KUMA_BASE_URL", DEFAULT_BASE_URL)
+    record = resume_request(
+        args.client_request_id,
+        repo_path=args.repo_path,
+        base_url=base_url,
+        timeout=args.timeout,
+        operation_wait_timeout=args.operation_wait_timeout,
+    )
+    _emit(record.to_dict())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the public CLI parser without performing I/O."""
     parser = argparse.ArgumentParser(prog="kuma")
@@ -206,6 +233,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     suggest.add_argument("--output", help="optional requirement-ready JSON destination")
     suggest.set_defaults(func=cmd_strategies_suggest)
+    requests = subparsers.add_parser(
+        "requests", help="inspect or resume official asynchronous requests"
+    )
+    request_commands = requests.add_subparsers(dest="requests_command", required=True)
+    request_list = request_commands.add_parser(
+        "list", help="list local non-secret request records"
+    )
+    request_list.add_argument("--repo-path", default=".")
+    request_list.set_defaults(func=cmd_requests_list)
+    request_show = request_commands.add_parser(
+        "show", help="show one local request record"
+    )
+    request_show.add_argument("client_request_id")
+    request_show.add_argument("--repo-path", default=".")
+    request_show.set_defaults(func=cmd_requests_show)
+    request_resume = request_commands.add_parser(
+        "resume", help="resume one accepted official operation"
+    )
+    request_resume.add_argument("client_request_id")
+    request_resume.add_argument("--repo-path", default=".")
+    request_resume.add_argument("--base-url")
+    request_resume.add_argument("--timeout", type=float, default=30.0)
+    request_resume.add_argument("--operation-wait-timeout", type=float, default=600.0)
+    request_resume.set_defaults(func=cmd_requests_resume)
     return parser
 
 

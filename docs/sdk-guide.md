@@ -210,6 +210,14 @@ Framework-neutral runtime metadata follows the [Runtime Evidence contract](runti
 
 Before official upload, KUMA scans output, errors, paths, diffs, explicit logs, and custom Cases for sensitive material. The API key is used for authorization and is not added to Evidence. `allow_sensitive=True` is an explicit ordinary-Evidence override, not a substitute for isolation or secret hygiene.
 
+Known OpenAI, OpenAI project, and Anthropic `sk-` credential prefixes are
+blocked as `sk_api_key` before official upload. Findings contain only the rule
+and location, never the matched value; KUMA does not use entropy guessing.
+
+Custom Cases contain public Inputs and constraints only. Do not attach a
+Rubric: `rubric`, `private_rubric`, and `rubric_context` are rejected before
+upload. The official Judge evaluates the supplied public Case directly.
+
 ## OpenTelemetry
 
 OpenTelemetry (OTel) is the standard observability API used by Agent frameworks and instrumentation to emit spans. KUMA maps spans that were **actually emitted in the same process** into bounded Evidence. It does not invent Agent activity and is not an OTel Collector, backend, or trace UI.
@@ -305,7 +313,13 @@ Common subclasses include `ConfigurationError`, `AuthenticationError`, `Permissi
 
 `timeout` bounds one public HTTP attempt. `operation_wait_timeout` bounds the complete official single-Case or Judge operation. POST retries reuse a stable idempotency key; only server-declared transient failures are retried within `max_retries`, and `ServiceBusyError` is not retried automatically.
 
-An operation timeout retains bounded recovery metadata without storing credentials, request content, Evidence, or results. Judge retry requires the original Run and History; the high-level API cannot rebuild a lost Run from only `run_id` after process exit.
+Official starts retain bounded request metadata under `.kuma/requests/` without
+storing credentials, request content, Evidence, or Rubrics. After a process
+exit, use `kuma requests list`, `kuma requests show <client-request-id>`, and
+`kuma requests resume <client-request-id>` (or the matching Python APIs). Known
+operations are polled with GET only; an accepted response lost before the local
+operation ID was saved is recovered through authenticated lookup. A recovered
+Judge report is written to `.kuma/reports/<run_id>.json`.
 
 ## Troubleshooting
 
@@ -317,7 +331,7 @@ An operation timeout retains bounded recovery metadata without storing credentia
 | `submit()` returns `None` | Check remaining Inputs, `judge`, `run.state`, and `run.history` |
 | `input_protocol` | Alternate one `get_input()` with one `submit()` and avoid concurrent advancement |
 | Sensitive-data rejection | Remove secrets from output, paths, logs, diffs, and custom Cases |
-| Operation timeout | Keep the original Run, inspect `retryable`, and retry without changing protocols |
+| Operation timeout or lost response | Inspect `.kuma/requests/`, then resume the same client request ID |
 | Missing Trace output | Submit explicit JSON output or install and attach `[otel]` correctly |
 
 ## Reference

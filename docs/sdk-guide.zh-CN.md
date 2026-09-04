@@ -204,6 +204,14 @@ print(report)
 
 上传到官方服务前，KUMA 会扫描 output、error、路径、diff、显式日志和自定义 Case 中的敏感内容。API Key 仅用于鉴权，不会加入 Evidence。`allow_sensitive=True` 只是普通 Evidence 的显式覆盖，不能替代隔离与 secret 管理。
 
+已知 OpenAI、OpenAI project 与 Anthropic 的 `sk-` 凭证前缀会在官方上传前
+按 `sk_api_key` 拒绝。finding 只包含规则和位置，不包含命中的值；KUMA 不做
+熵猜测。
+
+自定义 Case 只包含公开 Input 与约束。不要附带 Rubric：`rubric`、
+`private_rubric` 和 `rubric_context` 都会在上传前被拒绝；官方 Judge 直接评估
+用户提供的公开 Case。
+
 ## OpenTelemetry
 
 OpenTelemetry（OTel）是 Agent 框架和 instrumentation 用来产生 span 的标准可观测性接口。KUMA 只把**同一进程中真实产生**的 span 映射为有界 Evidence；它不会伪造 Agent 行为，也不是 OTel Collector、后端或 Trace UI。
@@ -299,7 +307,12 @@ except KumaError as exc:
 
 `timeout` 限制单次公开 HTTP 尝试；`operation_wait_timeout` 限制完整的官方单 Case 或 Judge operation。POST 重试会复用稳定幂等键；只有服务端声明的瞬态失败才会在 `max_retries` 范围内重试，`ServiceBusyError` 不会自动重试。
 
-operation 超时只保留有界恢复元数据，不保存凭证、请求正文、Evidence 或结果。Judge 重试需要保留原 Run 与 History；进程退出并丢失 Run 后，高层 API 不能只通过 `run_id` 重建。
+官方请求会在 `.kuma/requests/` 保留有界元数据，不保存凭证、请求正文、
+Evidence 或 Rubric。进程退出后，可使用 `kuma requests list`、
+`kuma requests show <client-request-id>` 与
+`kuma requests resume <client-request-id>`（或对应 Python API）。已知 operation
+只执行 GET 轮询；若接受响应在本地保存 operation ID 前丢失，则通过鉴权查询
+恢复。恢复成功的 Judge 报告写入 `.kuma/reports/<run_id>.json`。
 
 ## 故障排查
 
@@ -311,7 +324,7 @@ operation 超时只保留有界恢复元数据，不保存凭证、请求正文�
 | `submit()` 返回 `None` | 检查剩余 Input、`judge`、`run.state` 与 `run.history` |
 | `input_protocol` | 严格交替执行一次 `get_input()` 与一次 `submit()`，不要并发推进 |
 | 敏感数据被拒绝 | 从 output、路径、日志、diff 与自定义 Case 中移除 secret |
-| operation 超时 | 保留原 Run，检查 `retryable`，不要切换协议后重试 |
+| operation 超时或响应丢失 | 查看 `.kuma/requests/`，再恢复同一个客户端请求 ID |
 | 缺少 Trace 输出 | 显式提交 JSON 输出，或正确安装并 attach `[otel]` |
 
 ## 参考

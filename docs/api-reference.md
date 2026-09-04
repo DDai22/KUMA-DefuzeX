@@ -97,6 +97,15 @@ metadata, may create `.kuma/`, and may call only the public Backend for official
 Providers. It never contacts MCP, a model, or a database directly. Custom
 Providers run in the caller's process with that process's permissions.
 
+### Custom Case boundary
+
+A custom Case supplies only public Inputs and constraints. Its `rubric`
+compatibility slot must be `None`; mappings containing `rubric`,
+`private_rubric`, or `rubric_context` fail with
+`custom_rubric_not_supported` before upload. When the official Judge evaluates
+a custom Case, KUMA sends that closed public Case directly and does not create
+or transmit caller-authored criteria, a Rubric ID, or a private revision ID.
+
 ## `Run`
 
 ### `get_input`
@@ -283,6 +292,37 @@ Use the [Agent tool capabilities guide](agent-tool-capabilities.md) for the clos
 | `scan_agent_tool_manifest(path)` | Explicit UTF-8 scanner-input JSON manifest. | Reads only that file and returns generated `AgentCapabilities`; no Agent import, repository traversal, tool execution, or network. |
 
 `AgentCapabilities`, `ToolCapability`, and `ResourceScope` are immutable public values with detached `to_dict()` output. `AGENT_CAPABILITIES_SCHEMA_VERSION` identifies the accepted document version. Loading or saving may raise `ValidationError` or `SensitiveDataError`; none of these APIs uploads the document.
+
+## JSON serialization
+
+`kuma.to_json(value)` converts an exact public immutable KUMA contract or an
+already JSON-compatible value into a detached plain JSON graph. It returns
+containers and scalars, not encoded text; use
+`json.dumps(kuma.to_json(value), allow_nan=False)` when text is required. The
+conversion supports the public Case, Input, Submission, History, Evidence,
+report, Strategy Group, capability, request-record, and batch-result types.
+Cycles, more than 256 container levels, non-finite numbers, bytes, sets,
+arbitrary dataclasses, subclasses, and unsupported objects fail with
+`ValidationError(code="output_invalid")`. The function performs no I/O and is
+not a redactor.
+
+## Request recovery
+
+Official Case and Judge starts create a non-secret local record under
+`.kuma/requests/` before the first POST. Use `list_requests(repo_path)`,
+`show_request(client_request_id, repo_path=...)`, and
+`resume_request(client_request_id, repo_path=...)` to inspect or resume it from
+a later process. Equivalent commands are `kuma requests list`, `show`, and
+`resume`.
+
+The record keeps bounded identity and status metadata, never the API key,
+request body, Evidence, Rubric, prompt, or provider response. A known operation
+is resumed with GET-only polling. If the original accepted response was lost,
+KUMA first performs authenticated lookup using the stable
+`kreq_<32 lowercase hex>` client request ID. A prepared record that the Backend
+does not know fails as `request_not_started`; KUMA does not invent a bodyless
+POST. Successful Judge recovery writes the public report under
+`.kuma/reports/<run_id>.json` and retains the terminal request record.
 
 ## OpenTelemetry
 

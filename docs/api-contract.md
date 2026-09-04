@@ -45,6 +45,20 @@ Accept: application/json
 
 SDK 通过 `GET /sdk/v2/operations/{operation_id}/` 获取终态。活动响应只含 `operation_id` 和 `status`；成功响应加入 `result`（既有 Case 或 Judgment payload）；失败响应加入 `error: {code, retryable}`。未知 operation 返回稳定的 HTTP `404 operation_not_found`。失败 operation 本身是 HTTP `200` wrapper。
 
-单次 HTTP `timeout` 与总 `operation_wait_timeout` 相互独立。总等待超时保留本地恢复元数据；再次执行同一 Case 请求或同一 Run Judge 时，已知 `operation_id` 只继续 GET，未知 `operation_id` 则用原幂等键重发同一 POST。恢复文件只含 operation ID/type、幂等键、Backend identity 和时间戳，不保存 API Key、请求、Evidence 或结果内容。当前高层 Python API 不能在整个进程丢失 `Run` 对象后仅凭 `run_id` 重建 Run；Judge 恢复仍要求原 Run/History 可用。
+单次 HTTP `timeout` 与总 `operation_wait_timeout` 相互独立。v2 首次 POST 可带
+`X-Kuma-Client-Request-Id: kreq_<32位小写十六进制>`。Backend 将它与创建者、
+精确 API Key、scope、endpoint、幂等键和请求 hash 绑定。SDK 可通过
+`GET /sdk/requests/{client_request_id}/` 找回已经接受但响应丢失的公开
+operation；已知 `operation_id` 只继续 GET。不同请求复用同一身份会稳定 409，
+跨用户或跨 Key 查询表现为 404。
+
+本地 `.kuma/requests/` 只保存有界身份与状态元数据，不保存 API Key、请求、
+Evidence、Rubric 或 Provider 正文。Python `list_requests`、`show_request`、
+`resume_request` 及对应 `kuma requests` CLI 可跨进程恢复。Backend 查不到 prepared
+记录时，SDK 返回 `request_not_started`，不会发送无正文 POST。恢复成功的 Judge
+公开报告保存到 `.kuma/reports/<run_id>.json`。
+
+自定义 Case 上传禁止 `rubric`、`private_rubric` 和 `rubric_context`。官方 Judge
+接收 closed 公共 Case，不接收调用方 Rubric ID、私有 revision ID 或 criteria。
 
 `POST /sdk/judge/batch/` 仍是既有同步批量接口。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -18,10 +19,10 @@ from ..repository.metadata import prepare_repo_meta_upload
 from ..repository.privacy import enforce_sensitive_policy, scan_sensitive_json
 from ..repository.strategy_groups import validate_strategy_group_wire_selection
 from ..transport.backend import BackendClient, new_idempotency_key
-from ..transport.operations import (
-    PendingOperationStore,
-    await_operation,
-    request_identity,
+from ..transport.operations import PendingOperationStore, await_operation
+from ..transport.request_records import (
+    RequestOperationStore,
+    canonical_request_sha256,
 )
 from ._official_wire import (
     canonical_sha256,
@@ -39,6 +40,14 @@ _BEHAVIOR_SPEC_FIELDS = (
 _MAX_BEHAVIOR_FIELD_CHARS = 4000
 _MAX_BEHAVIOR_FIELD_BYTES = 8 * 1024
 _MAX_BEHAVIOR_SPEC_BYTES = 16 * 1024
+
+
+def _client_credential_identity(client: Any) -> str:
+    """Return the real key digest or a stable identity for controlled test clients."""
+    value = getattr(client, "credential_identity", None)
+    if isinstance(value, str) and len(value) == 64:
+        return value
+    return hashlib.sha256(b"kuma-controlled-provider-client").hexdigest()
 
 
 def _casegen_max_steps_limit(entitlements: Mapping[str, Any]) -> int:
@@ -165,16 +174,51 @@ def _official_case_response(
     max_steps: int,
     requested_strategy_id: str,
     requested_strategy_version: str | None,
+    requested_strategy_group: Mapping[str, Any] | None,
     repo_fingerprint: str,
 ) -> tuple[str, str, str, str, Mapping[str, Any], list[dict[str, str]]]:
-    """Validate an official Case result and return its normalized public parts."""
+    """Validate one official Case without conflating Group and member identities.
+
+    Args:
+        response: Terminal public Backend Case result.
+        max_steps: Maximum complete public steps accepted for this request.
+        requested_strategy_id: Strategy requested on the no-Group path, or
+            ``auto`` when the Backend selects an actual member.
+        requested_strategy_version: Exact no-Group strategy version when the
+            caller supplied one; current SDK Case requests normally omit it.
+        requested_strategy_group: Closed resolved Group coordinate sent in the
+            request, or ``None`` for the supported no-Group fallback path.
+        repo_fingerprint: Canonical repository metadata digest sent upstream.
+
+    Returns:
+        Case and batch IDs, returned member strategy coordinate, raw public
+        Case, and normalized Inputs. Group provenance is validated separately
+        and is not fabricated when the compatibility response omits it.
+
+    Raises:
+        ProviderError: If the public envelope, member binding, optional Group
+            provenance, fingerprint, signature, or step contract is invalid.
+
+    Postconditions:
+        The member strategy is internally consistent between batch and Case.
+        No-Group explicit requests additionally match that member. Group
+        requests are compared only with independent Group provenance when the
+        server supplies it; member IDs are never treated as Group IDs.
+    """
     batch, raw_case = _case_response_envelope(response)
     case_id = required_text(raw_case.get("case_id"), "case_id")
     batch_id = required_text(batch.get("batch_id"), "batch_id")
+    _validate_response_strategy_group(
+        response,
+        batch,
+        raw_case,
+        requested=requested_strategy_group,
+    )
     strategy_id, strategy_version = _selected_strategy(
         batch,
         requested_strategy_id=requested_strategy_id,
         requested_strategy_version=requested_strategy_version,
+        enforce_requested_identity=requested_strategy_group is None,
     )
     if not _case_matches_request(
         raw_case,
@@ -228,8 +272,28 @@ def _selected_strategy(
     *,
     requested_strategy_id: str,
     requested_strategy_version: str | None,
+    enforce_requested_identity: bool = True,
 ) -> tuple[str, str]:
-    """Validate the Backend's actual strategy selection against an explicit request."""
+    """Validate the returned legacy/member strategy coordinate.
+
+    ``strategy_id`` and ``strategy_version`` in the current Case response name
+    the actual strategy member selected inside a Strategy Group. On the
+    supported no-Group path, an explicit strategy still names that identity.
+
+    Args:
+        batch: Public batch metadata containing the actual member coordinate.
+        requested_strategy_id: Requested no-Group strategy ID or ``auto``.
+        requested_strategy_version: Optional no-Group requested version.
+        enforce_requested_identity: Whether a no-Group explicit request must
+            equal the returned member. Group-based requests set this to false.
+
+    Returns:
+        Non-``auto`` member strategy ID and version from the public batch.
+
+    Raises:
+        ProviderError: If the member coordinate is missing, unresolved, or does
+            not match an enforced no-Group explicit request.
+    """
     selected_strategy_id = required_text(
         batch.get("strategy_id"), "selected strategy_id"
     )
@@ -241,7 +305,7 @@ def _selected_strategy(
             "The Backend did not return an actual Case strategy selection",
             code="invalid_response",
         )
-    if (
+    if enforce_requested_identity and (
         requested_strategy_id != "auto"
         and selected_strategy_id != requested_strategy_id
     ):
@@ -249,7 +313,7 @@ def _selected_strategy(
             "The Backend Case strategy does not match the explicit request",
             code="invalid_response",
         )
-    if (
+    if enforce_requested_identity and (
         requested_strategy_version is not None
         and selected_strategy_version != requested_strategy_version
     ):
@@ -258,6 +322,69 @@ def _selected_strategy(
             code="invalid_response",
         )
     return selected_strategy_id, selected_strategy_version
+
+
+def _validate_response_strategy_group(
+    response: Mapping[str, Any],
+    batch: Mapping[str, Any],
+    raw_case: Mapping[str, Any],
+    *,
+    requested: Mapping[str, Any] | None,
+) -> None:
+    """Validate optional independent Strategy Group provenance from the server.
+
+    The deployed compatibility response omits this field. A future response may
+    place the same closed ``strategy_group_selection`` object on the response,
+    batch, or Case while rolling the field through the public layers. Every
+    present copy must be valid and exactly match the request; absence is accepted
+    but is never represented locally as server-returned provenance.
+
+    Args:
+        response: Complete terminal Backend response.
+        batch: Validated public batch mapping.
+        raw_case: The single validated public Case mapping.
+        requested: Closed Group selection sent in the request, or ``None`` for
+            the supported no-Group fallback path.
+
+    Returns:
+        ``None`` after accepting either an omitted compatibility field or exact
+        closed Group provenance.
+
+    Raises:
+        ProviderError: If Group provenance is unexpected, malformed,
+            inconsistent across response levels, or differs from the request.
+
+    Security/Privacy:
+        Only the five public selection fields are accepted. Catalog payloads or
+        private Core selection metadata cannot enter Case extensions.
+    """
+    returned = [
+        container["strategy_group_selection"]
+        for container in (response, batch, raw_case)
+        if "strategy_group_selection" in container
+    ]
+    if not returned:
+        return
+    if requested is None:
+        raise ProviderError(
+            "The Backend returned unexpected Strategy Group provenance",
+            code="invalid_response",
+        )
+    try:
+        expected = validate_strategy_group_wire_selection(requested)
+        validated = [
+            validate_strategy_group_wire_selection(value) for value in returned
+        ]
+    except ValidationError:
+        raise ProviderError(
+            "The Backend returned invalid Strategy Group provenance",
+            code="invalid_response",
+        ) from None
+    if any(value != expected for value in validated[1:]) or validated[0] != expected:
+        raise ProviderError(
+            "The Backend Strategy Group provenance does not match the request",
+            code="invalid_response",
+        )
 
 
 def _agent_description(context: CaseGenerationContext) -> str:
@@ -400,33 +527,58 @@ def _case_operation_store(
     *,
     payload: Mapping[str, Any],
     base_url: str,
-) -> PendingOperationStore:
-    """Bind resumable Case metadata to the request hash and Backend identity."""
-    identity = request_identity(payload, base_url=base_url)
-    return PendingOperationStore(
-        context.repo_path / ".kuma" / "operations" / "cases" / f"{identity}.json",
-        operation_type="case_generation",
+    api_key_sha256: str,
+) -> PendingOperationStore | RequestOperationStore:
+    """Bind one Case request to the addressable repository request ledger."""
+    if not isinstance(context, CaseGenerationContext):
+        raise ProviderError("Case context is invalid", code="request_state_invalid")
+    if not context.repo_path.is_dir():
+        return PendingOperationStore(
+            None,
+            operation_type="case_generation",
+            base_url=base_url,
+        )
+    return RequestOperationStore(
+        context.repo_path,
+        request_type="case_generation",
+        request_sha256=canonical_request_sha256(payload),
         base_url=base_url,
+        api_key_sha256=api_key_sha256,
+        case_validation={
+            "repo_fingerprint": payload["repo_meta"]["repo_fingerprint"],
+            "max_steps": context.max_steps,
+            "strategy_id": context.strategy,
+            "strategy_group_selection": (
+                None
+                if context.strategy_group_selection is None
+                else validate_strategy_group_wire_selection(
+                    context.strategy_group_selection
+                )
+            ),
+        },
     )
 
 
 def _normalized_case(
     response: Mapping[str, Any],
     *,
-    context: CaseGenerationContext,
     repo_fingerprint: str,
     max_steps: int,
+    requested_strategy_id: str,
+    requested_strategy_group: Mapping[str, Any] | None,
 ) -> Mapping[str, Any]:
     """Convert a bounded Backend result to public Case data with opaque provenance.
 
     Args:
         response: Terminal operation result returned by the public Backend.
-        context: Immutable repository, requirement, and strategy correlation for
-            the current Run.
         repo_fingerprint: Digest sent in the Case request and required in every
             returned Case.
         max_steps: Effective public step ceiling. Omitted and explicit-default
             requests both use 10, rather than the legacy internal ceiling of 50.
+        requested_strategy_id: Legacy/member strategy request used only when no
+            Strategy Group was resolved.
+        requested_strategy_group: Exact resolved Group coordinate, which remains
+            distinct from the returned member strategy identity.
 
     Returns:
         Normalized text Case mapping with validated, opaque official provenance.
@@ -437,35 +589,24 @@ def _normalized_case(
 
     Postconditions:
         The result contains the complete Case; it is never truncated to fit the
-        requested upper bound.
+        requested upper bound. Official provenance records the actual returned
+        member strategy; a requested Strategy Group remains a separate identity.
     """
-    requested_strategy_id = context.strategy
     requested_strategy_version = None
-    if context.strategy_group_selection is not None:
-        selected_id = context.strategy_group_selection.get("strategy_group_id")
-        selected_version = context.strategy_group_selection.get(
-            "strategy_group_version"
-        )
-        if (
-            not isinstance(selected_id, str)
-            or not selected_id
-            or not isinstance(selected_version, str)
-            or not selected_version
-        ):
-            raise ProviderError(
-                "The resolved Strategy Group selection is invalid",
-                code="strategy_group_invalid",
-            )
-        requested_strategy_id = selected_id
-        requested_strategy_version = selected_version
-    case_id, batch_id, strategy_id, strategy_version, raw_case, inputs = (
-        _official_case_response(
-            response,
-            max_steps=max_steps,
-            requested_strategy_id=requested_strategy_id,
-            requested_strategy_version=requested_strategy_version,
-            repo_fingerprint=repo_fingerprint,
-        )
+    (
+        case_id,
+        batch_id,
+        strategy_id,
+        strategy_version,
+        raw_case,
+        inputs,
+    ) = _official_case_response(
+        response,
+        max_steps=max_steps,
+        requested_strategy_id=requested_strategy_id,
+        requested_strategy_version=requested_strategy_version,
+        requested_strategy_group=requested_strategy_group,
+        repo_fingerprint=repo_fingerprint,
     )
     provenance = validate_official_case_provenance(
         {
@@ -719,6 +860,7 @@ class OfficialCaseProvider:
             context,
             payload=payload,
             base_url=self.client.base_url,
+            api_key_sha256=_client_credential_identity(self.client),
         )
 
         if preflight_max_steps is not None and store.load() is None:
@@ -730,6 +872,10 @@ class OfficialCaseProvider:
         def start_operation(key: str, deadline: float) -> Mapping[str, Any]:
             """POST the Case payload once per stable key within the shared deadline."""
             kwargs: dict[str, Any] = {"idempotency_key": key}
+            if isinstance(self.client, BackendClient) and isinstance(
+                store, RequestOperationStore
+            ):
+                kwargs["client_request_id"] = store.client_request_id
             if isinstance(self.client, BackendClient):
                 kwargs["_deadline"] = deadline
                 kwargs["_expected_status"] = 202
@@ -742,12 +888,16 @@ class OfficialCaseProvider:
 
         def accept_result(response: Mapping[str, Any]) -> Mapping[str, Any]:
             """Validate and normalize success before resumable state may be cleared."""
-            return _normalized_case(
+            accepted = _normalized_case(
                 response,
-                context=context,
                 repo_fingerprint=repo_fingerprint,
                 max_steps=context.max_steps,
+                requested_strategy_id=context.strategy,
+                requested_strategy_group=context.strategy_group_selection,
             )
+            if isinstance(store, RequestOperationStore):
+                store.stage_public_result(case_id=str(accepted["case_id"]))
+            return accepted
 
         return await_operation(
             self.client,

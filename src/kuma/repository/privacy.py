@@ -38,6 +38,10 @@ _TEXT_PATTERNS = (
         re.compile(r"\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{20,}\b"),
     ),
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
+    (
+        "sk_api_key",
+        re.compile(r"\bsk-(?:(?:proj|ant-api03)-)?[A-Za-z0-9_-]{20,}\b"),
+    ),
     ("kuma_key", re.compile(r"\bdfx_[A-Za-z0-9_-]{6,}\.[A-Za-z0-9._-]{12,}\b")),
     (
         "credential_assignment",

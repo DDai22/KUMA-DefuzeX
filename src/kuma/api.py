@@ -31,6 +31,7 @@ from .providers._official_wire import validate_official_case_provenance
 from .providers.base import CaseGenerationContext, CaseProvider, JudgeProvider
 from .providers.normalization import normalize_case
 from .repository.metadata import collect_repo_meta
+from .repository.privacy import enforce_sensitive_policy, scan_sensitive_text
 from .repository.requirements import RequirementSpec, parse_requirement
 from .repository.strategy_groups import (
     ResolvedStrategyGroup,
@@ -228,6 +229,50 @@ def _prepare_case_requirement(
     return adapted, requirement
 
 
+def _preflight_official_requirement_privacy(
+    requirement: RequirementSpec | None,
+    *,
+    official_case: bool,
+    allow_sensitive: bool,
+) -> None:
+    """Reject sensitive official requirement text before public discovery calls.
+
+    Args:
+        requirement: Parsed local requirement, or ``None`` for a custom Provider
+            that explicitly opted out of requirement input.
+        official_case: Whether the Run will send requirement-derived fields to
+            the public Case service.
+        allow_sensitive: Existing explicit ordinary-Evidence policy override.
+
+    Raises:
+        SensitiveDataError: If an official requirement contains a recognized
+            credential or private-data shape and the existing policy disallows
+            it.
+
+    Preconditions:
+        Requirement parsing and pure Run option validation have completed, but
+        credentials, Backend discovery, repository scanning, and Runtime setup
+        have not started.
+
+    Postconditions:
+        Success permits later provider negotiation. Failure leaves transport,
+        repository state, OTel, Runtime, and billing untouched.
+
+    Side Effects:
+        None. The function scans only the already-read requirement string.
+
+    Security/Privacy:
+        Findings retain only a stable rule ID and the safe ``requirement``
+        location; the matched text is never copied into an exception.
+    """
+    if not official_case or requirement is None:
+        return
+    enforce_sensitive_policy(
+        scan_sensitive_text(requirement.content, location="requirement"),
+        allow_sensitive=allow_sensitive,
+    )
+
+
 def _adapted_providers(
     *,
     config: CreateRunConfig,
@@ -344,7 +389,7 @@ def _adapted_providers(
             backend,
             allow_sensitive=config.allow_sensitive,
             operation_wait_timeout=config.operation_wait_timeout,
-            state_root=repo_path / ".kuma" / "runs",
+            state_root=repo_path,
         )
     else:
         adapted_judge = adapt_judge_provider(judge_provider)
@@ -530,6 +575,11 @@ def create_run(
         case_provider,
         requirement_path,
     )
+    _preflight_official_requirement_privacy(
+        requirement,
+        official_case=adapted_case_input is None,
+        allow_sensitive=config.allow_sensitive,
+    )
     resolved_repo = _resolve_repo_path(repo_path)
     repo_root_alias = _repo_root_alias(repo_path)
     trace_evidence, trace_auto_warning = _resolve_trace_evidence(trace_evidence)
@@ -608,15 +658,6 @@ def create_run(
             raise ProviderError(
                 "Custom Case Provider returned reserved official_case metadata",
                 code="invalid_case_provenance",
-            )
-        if (
-            not official_case
-            and config.judge
-            and not official_judge
-            and case.rubric is None
-        ):
-            raise ConfigurationError(
-                "Custom Case + custom Judge requires a fixed public rubric"
             )
         evidence = EvidenceCollector(
             root=resolved_repo,

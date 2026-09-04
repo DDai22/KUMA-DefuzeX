@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any
 
@@ -21,6 +21,7 @@ def _transform_json(
     freeze: bool,
     depth: int,
     active_containers: set[int],
+    object_fields: Callable[[Any], Mapping[str, Any] | None] | None = None,
 ) -> Any:
     """Copy one JSON graph while enforcing finite scalars, depth, and acyclicity.
 
@@ -35,6 +36,10 @@ def _transform_json(
         active_containers: Object identities on the current traversal path.
             Identities are removed when their container finishes, so a shared
             child used by two siblings is not mistaken for a cycle.
+        object_fields: Optional boundary-owned projection for supported typed
+            objects. A returned mapping is traversed as the object's JSON
+            representation without consuming a user JSON container-depth
+            level; ``None`` leaves unsupported objects rejected.
 
     Returns:
         A detached value containing only finite JSON scalar types and built-in
@@ -68,9 +73,12 @@ def _transform_json(
         if math.isfinite(value):
             return value
         raise JsonStructureError("non-finite JSON number")
-    if not isinstance(value, (Mapping, list, tuple)):
+    projected_fields = object_fields(value) if object_fields is not None else None
+    projected_object = projected_fields is not None and not isinstance(value, Mapping)
+    mapping_value = value if isinstance(value, Mapping) else projected_fields
+    if mapping_value is None and not isinstance(value, (list, tuple)):
         raise JsonStructureError("unsupported JSON value")
-    if depth >= MAX_JSON_CONTAINER_DEPTH:
+    if not projected_object and depth >= MAX_JSON_CONTAINER_DEPTH:
         raise JsonStructureError("JSON container depth exceeded")
 
     identity = id(value)
@@ -78,15 +86,17 @@ def _transform_json(
         raise JsonStructureError("cyclic JSON value")
     active_containers.add(identity)
     try:
-        if isinstance(value, Mapping):
+        if mapping_value is not None:
+            child_depth = depth if projected_object else depth + 1
             transformed = {
                 str(key): _transform_json(
                     child,
                     freeze=freeze,
-                    depth=depth + 1,
+                    depth=child_depth,
                     active_containers=active_containers,
+                    object_fields=object_fields,
                 )
-                for key, child in value.items()
+                for key, child in mapping_value.items()
             }
             return MappingProxyType(transformed) if freeze else transformed
         transformed_items = tuple(
@@ -95,6 +105,7 @@ def _transform_json(
                 freeze=freeze,
                 depth=depth + 1,
                 active_containers=active_containers,
+                object_fields=object_fields,
             )
             for child in value
         )
@@ -103,13 +114,22 @@ def _transform_json(
         active_containers.remove(identity)
 
 
-def detach_json(value: Any) -> Any:
+def detach_json(
+    value: Any,
+    *,
+    object_fields: Callable[[Any], Mapping[str, Any] | None] | None = None,
+) -> Any:
     """Return a mutable JSON copy after bounded graph and encoder validation.
 
     Args:
         value: Candidate public payload. Mappings and ``list``/``tuple`` values
             may contain at most 256 nested containers, counting a container at
             the root as level one.
+        object_fields: Optional internal projection used by an owning public
+            boundary to expose explicitly supported typed objects as mappings.
+            Ordinary payload validation leaves this unset and therefore still
+            rejects arbitrary objects. Projected contract wrappers do not
+            consume the 256-level budget enforced on their JSON fields.
 
     Returns:
         A detached graph made only of dictionaries, lists, and finite JSON
@@ -138,6 +158,7 @@ def detach_json(value: Any) -> Any:
             freeze=False,
             depth=0,
             active_containers=set(),
+            object_fields=object_fields,
         )
         json.dumps(plain, allow_nan=False)
     except JsonStructureError:

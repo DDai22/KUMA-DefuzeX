@@ -399,7 +399,7 @@ class Submission:
 
 @dataclass(frozen=True, slots=True)
 class Case:
-    """A complete normalized input sequence and optional public custom rubric.
+    """A complete normalized input sequence with rubric-free public content.
 
     Official Cases carry integrity references in ``extensions`` and never expose
     a private server-side rubric through this contract.
@@ -412,15 +412,17 @@ class Case:
             ``structured``.
         input_schema: Read-only JSON Schema for structured inputs, otherwise
             usually ``None``.
-        rubric: Transparent public rules for a local custom Judge, or ``None``.
-            It may describe criteria but must not contain expected outputs,
-            answer keys, hidden answers, or official private-rubric content.
+        rubric: Reserved compatibility slot that must be ``None``. Custom Cases
+            are judged directly from their public inputs and constraints; caller
+            Rubrics are rejected rather than silently ignored or uploaded.
         extensions: Public metadata and, for official Cases, validated opaque
             provenance needed to submit the correct ``case_id`` for judging.
 
     Security/Privacy:
         ``extensions`` is validated at official boundaries and must not contain
         private rubric criteria, hidden answers, prompts, or provider keys.
+        Supplying any caller-authored Rubric raises ``ValidationError`` before
+        the Case can enter a Run or network request.
     """
 
     inputs: tuple[KumaInput, ...]
@@ -446,6 +448,11 @@ class Case:
             item.case_id != self.case_id for item in self.inputs
         ):
             raise ValidationError("Case case_id must match every Input")
+        if self.rubric is not None:
+            raise ValidationError(
+                "Custom Case does not support Rubric fields",
+                code="custom_rubric_not_supported",
+            )
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(
             self, "input_schema", _freeze_json(self.input_schema, "input_schema")
