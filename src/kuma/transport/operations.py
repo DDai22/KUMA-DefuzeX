@@ -475,6 +475,38 @@ def _poll_response(
 StartOperation = Callable[[str, float], Mapping[str, Any]]
 
 
+def _record_active_status(
+    store: PendingOperationStore, state: PendingOperation, status: str
+) -> PendingOperation:
+    """Persist active status when the supplied store supports durable records."""
+    setter = getattr(store, "set_status", None)
+    return state if setter is None else setter(state, status)
+
+
+def _record_success(store: PendingOperationStore, state: PendingOperation) -> None:
+    """Retain durable success or clear legacy ephemeral pending metadata."""
+    marker = getattr(store, "mark_succeeded", None)
+    if marker is None:
+        store.clear()
+    else:
+        marker(state)
+
+
+def _record_failure(
+    store: PendingOperationStore,
+    state: PendingOperation,
+    *,
+    code: str,
+    retryable: bool,
+) -> None:
+    """Retain a safe durable failure or clear legacy pending metadata."""
+    marker = getattr(store, "mark_failed", None)
+    if marker is None:
+        store.clear()
+    else:
+        marker(state, code=code, retryable=retryable)
+
+
 def await_operation(
     client: BackendClient,
     store: PendingOperationStore,
@@ -487,8 +519,8 @@ def await_operation(
     """Start or resume one operation until a validated terminal result arrives.
 
     The stable key and operation ID survive retryable transport failures and
-    wait timeouts. State is cleared only after result acceptance or a terminal
-    public failure, preventing a retry from creating a second paid operation.
+    wait timeouts. Legacy ephemeral stores clear after an accepted result or
+    terminal failure; durable request ledgers retain a safe terminal identity.
 
     Args:
         client: Public Backend client used for operation-status GET requests.
@@ -515,12 +547,12 @@ def await_operation(
         idempotent for the provided key.
 
     Postconditions:
-        Success clears state only after accepted result validation. Terminal
-        failed operation clears state after mapping. Timeout/transient failure
-        keeps the same key and operation ID for GET-only resume where possible.
+        Result validation always precedes the success transition. Durable stores
+        retain succeeded/failed identity, while legacy stores clear it. Timeout
+        and transient failure keep the same key and operation ID for resume.
 
     Side Effects:
-        May atomically write/delete pending metadata, issue one idempotent POST,
+        May atomically transition recovery metadata, issue one idempotent POST,
         sleep according to bounded server polling guidance, and issue status GETs.
 
     Security/Privacy:
@@ -552,7 +584,12 @@ def await_operation(
                 )
         except KumaError as exc:
             if exc.code == "operation_not_found":
-                store.clear()
+                _record_failure(
+                    store,
+                    state,
+                    code=exc.code,
+                    retryable=exc.retryable,
+                )
                 raise
             if not exc.retryable or isinstance(exc, ServiceBusyError):
                 raise
@@ -561,16 +598,22 @@ def await_operation(
         status, result, error = _poll_response(response, state.operation_id or "")
         if status == "succeeded" and result is not None:
             accepted = result if accept_result is None else accept_result(result)
-            store.clear()
+            _record_success(store, state)
             return accepted
         if status == "failed" and error is not None:
-            store.clear()
+            _record_failure(
+                store,
+                state,
+                code=error[0],
+                retryable=error[1],
+            )
             raise mapped_error(
                 error[0],
                 retryable=error[1],
                 message=error[2],
                 details=error[3],
             )
+        state = _record_active_status(store, state, status)
         _sleep_bounded(poll_after_ms, deadline)
 
 

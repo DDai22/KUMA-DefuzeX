@@ -28,6 +28,7 @@ from .errors import (
 from .evidence.tracking.evidence import EvidenceCollector, PreparedEvidence
 from .providers.base import JudgeContext, JudgeProvider
 from .providers.normalization import normalize_report
+from .providers.official_judge import OfficialJudgeProvider
 from .runtime import RuntimeSession
 
 RunState = Literal[
@@ -165,6 +166,36 @@ def _validate_log_paths(
             )
         normalized.append(value)
     return tuple(normalized)
+
+
+def _unexpected_judge_failure(provider: JudgeProvider) -> ProviderError:
+    """Classify an unexpected Judge exception without exposing its contents.
+
+    Args:
+        provider: Configured Judge object that raised a non-``KumaError``.
+
+    Returns:
+        A stable ``provider_failed`` error whose message identifies whether the
+        SDK's concrete official Provider or caller-supplied custom code failed.
+
+    Preconditions:
+        The provider call failed with an exception outside the public KUMA
+        hierarchy. The caller retains that exception only as the Python cause.
+
+    Postconditions:
+        The returned message and details contain no provider class name,
+        exception text, traceback, request data, or host information.
+
+    Side Effects:
+        None. This helper performs only an in-process type classification.
+
+    Security/Privacy:
+        Only the SDK-owned ``OfficialJudgeProvider`` type is classified as
+        official; arbitrary protocol implementations remain custom.
+    """
+    if isinstance(provider, OfficialJudgeProvider):
+        return ProviderError("The official Judge Provider failed")
+    return ProviderError("The custom Judge Provider failed")
 
 
 class Run:
@@ -632,7 +663,39 @@ class Run:
             return self._judge_locked(wait=wait)
 
     def _judge_locked(self, *, wait: bool) -> TestReport:
-        """Judge completed history once and restore ``completed`` after Provider failure."""
+        """Judge completed history once under the Run's lifecycle mutex.
+
+        Args:
+            wait: Must remain ``True`` for the synchronous public API.
+
+        Returns:
+            The cached or newly normalized final report.
+
+        Raises:
+            ConfigurationError: If asynchronous return is requested.
+            InputProtocolError: If the Run is not ready for judging.
+            KumaError: Re-raises an intentional official/custom Provider or
+                normalization error unchanged.
+            ProviderError: Maps an unexpected non-KUMA exception to a safe
+                ``provider_failed`` error attributed to the actual Provider kind.
+
+        Preconditions:
+            The caller holds ``_mutex`` and committed history is immutable while
+            this method runs.
+
+        Postconditions:
+            Success caches one report and sets ``report_ready``. Every Provider
+            failure restores ``completed`` so the same history can be retried;
+            no report is fabricated.
+
+        Side Effects:
+            Invokes the configured Judge. The official implementation may use
+            its existing idempotent public HTTP operation and pending store.
+
+        Security/Privacy:
+            Unexpected exception text and Provider implementation names are not
+            copied into the public message or details.
+        """
         if not wait:
             raise ConfigurationError(
                 "SDK v4 Judge requests are synchronous; wait must remain True"
@@ -666,7 +729,7 @@ class Run:
             raise
         except Exception as exc:
             self._state = "completed"
-            raise ProviderError("The custom Judge Provider failed") from exc
+            raise _unexpected_judge_failure(self._judge_provider) from exc
         self._report = report
         self._state = "report_ready"
         return report

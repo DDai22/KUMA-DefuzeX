@@ -68,6 +68,8 @@ from .repository.tool_capability_io import (
     save_agent_capabilities,
     scan_agent_tool_manifest,
 )
+from .requests import RequestRecord, list_requests, resume_request, show_request
+from .serialization import to_json
 
 __all__ = [
     "AGENT_CAPABILITIES_SCHEMA_VERSION",
@@ -100,6 +102,7 @@ __all__ = [
     "PermissionDeniedError",
     "ProviderError",
     "RepoStateMismatchError",
+    "RequestRecord",
     "ResolvedStrategyGroup",
     "ResourceScope",
     "RunAlreadyActiveError",
@@ -116,10 +119,14 @@ __all__ = [
     "__version__",
     "configure",
     "create_run",
+    "list_requests",
     "load_agent_capabilities",
+    "resume_request",
     "save_agent_capabilities",
     "scan_agent_tool_manifest",
     "scan_agent_tools",
+    "show_request",
+    "to_json",
     "validate_agent_capabilities",
     "validate_strategy_group_catalog",
     "validate_strategy_group_declaration",

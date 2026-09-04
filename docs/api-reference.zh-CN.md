@@ -74,6 +74,14 @@ run = create_run(repo_path=".", requirement_path="requirement.md")
 
 **副作用与安全：** 读取 Requirement 和有界仓库元数据，可能创建 `.kuma/`，官方 Provider 只调用公开 Backend。SDK 不直连 MCP、模型或数据库；自定义 Provider 在调用方进程内运行并继承该进程权限。
 
+### 自定义 Case 边界
+
+自定义 Case 只能提供公开 Input 与约束。兼容字段 `rubric` 必须为
+`None`；mapping 中出现 `rubric`、`private_rubric` 或 `rubric_context`，会在
+上传前以 `custom_rubric_not_supported` 拒绝。官方 Judge 评估自定义 Case
+时，KUMA 直接发送 closed 公共 Case，不创建或传输调用方编写的 criteria、
+Rubric ID 或私有 revision ID。
+
 ## `Run`
 
 ### `get_input`
@@ -224,6 +232,31 @@ Closed JSON schema、CLI 流程、Requirement 路径规则和隐私边界见 [Ag
 | `scan_agent_tool_manifest(path)` | 显式 UTF-8 scanner 输入 JSON manifest。 | 只读取该文件并返回生成的 `AgentCapabilities`；不导入 Agent、不遍历仓库、不执行工具，也不联网。 |
 
 `AgentCapabilities`、`ToolCapability` 和 `ResourceScope` 是不可变公开值，均提供分离后的 `to_dict()`。`AGENT_CAPABILITIES_SCHEMA_VERSION` 表示接受的文档版本。加载或保存可能抛出 `ValidationError` 或 `SensitiveDataError`；这些 API 均不上传文档。
+
+## JSON 序列化
+
+`kuma.to_json(value)` 把精确的公开不可变 KUMA contract 或已有 JSON 值转换
+为独立的普通 JSON graph。它返回容器和标量，不返回编码后的文本；需要文本
+时使用 `json.dumps(kuma.to_json(value), allow_nan=False)`。它支持公开 Case、
+Input、Submission、History、Evidence、报告、策略组、能力、请求记录和批量结果
+类型。循环、超过 256 层、非有限数字、bytes、set、任意 dataclass、子类和不
+支持对象会以 `ValidationError(code="output_invalid")` 失败。该函数不执行
+I/O，也不是脱敏器。
+
+## 请求恢复
+
+官方 Case/Judge 首次 POST 前，会在 `.kuma/requests/` 创建不含秘密的本地
+记录。可在后续进程中使用 `list_requests(repo_path)`、
+`show_request(client_request_id, repo_path=...)` 和
+`resume_request(client_request_id, repo_path=...)` 查看或恢复；对应 CLI 为
+`kuma requests list`、`show` 和 `resume`。
+
+记录只保存有界身份与状态元数据，不保存 API Key、请求正文、Evidence、
+Rubric、Prompt 或 Provider 响应。已知 operation 只通过 GET 继续轮询；若首次
+接受响应丢失，KUMA 使用稳定的 `kreq_<32位小写十六进制>` 客户端请求 ID 做
+鉴权查询。Backend 不认识 prepared 记录时返回 `request_not_started`，SDK 不会
+伪造无正文 POST。Judge 成功恢复后，公开报告写入
+`.kuma/reports/<run_id>.json`，终态请求记录继续保留。
 
 ## OpenTelemetry
 

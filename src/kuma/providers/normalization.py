@@ -14,7 +14,7 @@ from ..repository.json_schema import validate_schema, validate_structured_input
 from ..repository.privacy import contains_private_data
 
 _CASE_FIELDS = frozenset(
-    {"case_id", "inputs", "input_type", "input_schema", "rubric", "extensions"}
+    {"case_id", "inputs", "input_type", "input_schema", "extensions"}
 )
 _INPUT_FIELDS = frozenset(
     {"input_id", "payload", "payload_type", "public_constraints", "extensions"}
@@ -32,8 +32,9 @@ _REPORT_FIELDS = frozenset(
         "extensions",
     }
 )
-_PRIVATE_INPUT_FIELDS = ("rubric",)
+_CUSTOM_RUBRIC_FIELDS = frozenset({"rubric", "private_rubric", "rubric_context"})
 _PRIVATE_CASE_ERROR = "Custom Case contains prohibited private fields"
+_CUSTOM_RUBRIC_ERROR = "Custom Case does not support Rubric fields"
 
 
 def _new_id(prefix: str) -> str:
@@ -87,8 +88,67 @@ def _public_input_value(value: Any) -> Any:
 
 def _reject_private_case_data(value: Any) -> None:
     """Reject private evaluation keys without retaining or echoing their values."""
-    if contains_private_data(value, extra_fields=_PRIVATE_INPUT_FIELDS):
+    if contains_private_data(value, extra_fields=tuple(_CUSTOM_RUBRIC_FIELDS)):
         raise ProviderError(_PRIVATE_CASE_ERROR)
+
+
+def _reject_custom_rubric_fields(value: Any) -> None:
+    """Reject caller-authored Rubric keys anywhere in detached custom Case data.
+
+    The custom Case normalizer and official Judge upload boundary share this
+    rule so a Rubric cannot be accepted locally and then silently dropped from
+    transport. Values are never included in the stable public error.
+    """
+    if isinstance(value, Mapping):
+        if {str(key).casefold() for key in value} & _CUSTOM_RUBRIC_FIELDS:
+            raise ProviderError(
+                _CUSTOM_RUBRIC_ERROR,
+                code="custom_rubric_not_supported",
+            )
+        for child in value.values():
+            _reject_custom_rubric_fields(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _reject_custom_rubric_fields(child)
+
+
+def validate_custom_case_public_data(case: Case) -> None:
+    """Validate a typed custom Case before normalization or official upload.
+
+    Args:
+        case: Caller-authored Case whose public inputs may be sent to an
+            official Judge.
+
+    Raises:
+        ProviderError: If Rubric or other private evaluation fields occur in
+            Case metadata, constraints, extensions, or Input payloads.
+
+    Postconditions:
+        Success proves the typed Case contains only rubric-free public data;
+        wire serialization and ordinary sensitive-value scanning still run at
+        the Judge boundary.
+
+    Side Effects:
+        None. Validation performs no filesystem, network, model, or billing I/O.
+
+    Security/Privacy:
+        Failure exposes only a stable error/code and never the rejected key's
+        value or object representation.
+    """
+    public_data = {
+        "input_schema": case.input_schema,
+        "extensions": case.extensions,
+        "inputs": [
+            {
+                "payload": item.payload,
+                "public_constraints": item.public_constraints,
+                "extensions": item.extensions,
+            }
+            for item in case.inputs
+        ],
+    }
+    _reject_custom_rubric_fields(public_data)
+    _reject_private_case_data(public_data)
 
 
 def _case_envelope_json(result: Mapping[Any, Any]) -> tuple[dict[str, Any], Any]:
@@ -138,6 +198,7 @@ def _case_envelope_json(result: Mapping[Any, Any]) -> tuple[dict[str, Any], Any]
         raise ProviderError("Provider value must be JSON serializable") from None
 
     plain = _plain_json(envelope)
+    _reject_custom_rubric_fields(plain)
     if raw_inputs is missing:
         _reject_private_case_data(plain)
         raise ProviderError("Case Provider mapping must contain an 'inputs' field")
@@ -189,8 +250,6 @@ class _CaseParts:
         case_id: Optional provider-supplied public Case identifier.
         input_type: Optional declared ``text``/``structured`` payload kind.
         input_schema: Optional public structured-input JSON Schema.
-        rubric: Optional public custom-provider rubric; official private rubric
-            content is forbidden here.
         extensions: Optional public extension metadata awaiting validation.
     """
 
@@ -198,7 +257,6 @@ class _CaseParts:
     case_id: str | None = None
     input_type: str | None = None
     input_schema: Mapping[str, Any] | None = None
-    rubric: Mapping[str, Any] | None = None
     extensions: Mapping[str, Any] | None = None
 
 
@@ -212,29 +270,20 @@ def _case_parts(result: Any) -> _CaseParts:
     contract without allowing opaque objects in metadata.
     """
     if isinstance(result, Case):
-        _reject_private_case_data(
-            {
-                "inputs": [_public_input_value(item) for item in result.inputs],
-                "input_schema": result.input_schema,
-                "extensions": result.extensions,
-            }
-        )
-        _reject_private_case_data(result.rubric)
+        validate_custom_case_public_data(result)
         return _CaseParts(
             inputs=result.inputs,
             case_id=result.case_id,
             input_type=result.input_type,
             input_schema=result.input_schema,
-            rubric=result.rubric,
             extensions=result.extensions,
         )
     if not isinstance(result, Mapping):
         return _CaseParts(inputs=result)
     result, raw_inputs = _case_envelope_json(result)
 
-    public_case = {key: value for key, value in result.items() if key != "rubric"}
-    _reject_private_case_data(public_case)
-    _reject_private_case_data(result.get("rubric"))
+    _reject_custom_rubric_fields(result)
+    _reject_private_case_data(result)
     supplied_extensions = result.get("extensions", {})
     if not isinstance(supplied_extensions, Mapping):
         raise ProviderError("Case extensions must be a mapping")
@@ -245,7 +294,6 @@ def _case_parts(result: Any) -> _CaseParts:
         case_id=result.get("case_id"),
         input_type=result.get("input_type"),
         input_schema=result.get("input_schema"),
-        rubric=result.get("rubric"),
         extensions=extensions,
     )
 
@@ -377,7 +425,7 @@ def normalize_case(
         New immutable :class:`Case` with correlated IDs and detached JSON values.
 
     Raises:
-        ProviderError: If shape, count, identifiers, schema, payload, rubric, or
+        ProviderError: If shape, count, identifiers, schema, payload, or
             extensions violate the public Provider contract.
 
     Preconditions:
@@ -401,8 +449,6 @@ def normalize_case(
     ):
         raise ProviderError("case_id must be a non-empty string")
     resolved_case_id = parts.case_id or _new_id("case")
-    if parts.rubric is not None and not isinstance(parts.rubric, Mapping):
-        raise ProviderError("Custom rubric must be a mapping")
     if parts.input_schema is not None and not isinstance(parts.input_schema, Mapping):
         raise ProviderError("Case input_schema must be a mapping")
 
@@ -415,6 +461,7 @@ def normalize_case(
         scanned_value = (
             public_value if isinstance(value, KumaInput) else _plain_json(public_value)
         )
+        _reject_custom_rubric_fields(scanned_value)
         _reject_private_case_data(scanned_value)
         parsed.append(
             _input_parts(value if isinstance(value, KumaInput) else public_value)
@@ -433,14 +480,12 @@ def normalize_case(
     inputs = _normalized_inputs(parsed, run_id=run_id, case_id=resolved_case_id)
 
     extensions = parts.extensions or {}
-    _ensure_json(parts.rubric, "Custom rubric")
     _ensure_json(extensions, "Case extensions")
     return Case(
         inputs=inputs,
         case_id=resolved_case_id,
         input_type=resolved_type,
         input_schema=resolved_schema,
-        rubric=parts.rubric,
         extensions=extensions,
     )
 

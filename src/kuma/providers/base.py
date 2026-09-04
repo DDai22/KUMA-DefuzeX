@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 from ..contracts import Case, HistoryItem
-from ..errors import ConfigurationError, ProviderError
+from ..errors import ConfigurationError, KumaError, ProviderError
 
 
 def _immutable_mapping(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -296,15 +296,17 @@ class CallableJudgeProvider:
             The callback result, which KUMA subsequently normalizes.
 
         Raises:
-            ProviderError: Re-raises an intentional provider error, or maps an
-                arbitrary callback exception to a safe stable failure.
+            KumaError: Re-raises any intentional SDK error unchanged, preserving
+                its stable code, retryability, request ID, and safe details.
+            ProviderError: Maps an arbitrary non-SDK callback exception to a
+                stable non-sensitive custom-provider failure.
 
         Security/Privacy:
             Arbitrary callback exception text is not propagated to callers.
         """
         try:
             return self.callback(context)
-        except ProviderError:
+        except KumaError:
             raise
         except Exception as exc:
             raise ProviderError("The custom Judge Provider failed") from exc

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from collections.abc import Mapping, Sequence
@@ -11,7 +12,7 @@ from typing import Any
 
 from ..contracts import JudgeBatchResult
 from ..errors import ConfigurationError, LimitExceededError, ProviderError
-from ..repository.privacy import enforce_sensitive_policy, scan_sensitive_text
+from ..repository.privacy import enforce_sensitive_policy, scan_sensitive_json
 from ..transport.backend import (
     BackendClient,
     UploadPart,
@@ -19,6 +20,12 @@ from ..transport.backend import (
     new_idempotency_key,
 )
 from ..transport.operations import PendingOperationStore, await_operation
+from ..transport.request_records import (
+    RequestOperationStore,
+    canonical_request_sha256,
+    find_active_request,
+    store_for_existing,
+)
 from ._official_evidence_upload import JudgeUploadConfig as _JudgeConfig
 from ._official_evidence_upload import evidence_upload as _evidence_upload
 from ._official_evidence_upload import judge_upload_config as _judge_config
@@ -29,7 +36,7 @@ from ._official_wire import (
     validate_official_case_provenance,
 )
 from .base import JudgeContext
-from .normalization import normalize_report
+from .normalization import normalize_report, validate_custom_case_public_data
 
 _MAX_TRACKED_RUNS = 1024
 
@@ -55,25 +62,89 @@ class _JudgeUpload:
     idempotency_key: str
 
 
+def _client_credential_identity(client: Any) -> str:
+    """Return the real key digest or a stable identity for controlled test clients."""
+    value = getattr(client, "credential_identity", None)
+    if isinstance(value, str) and len(value) == 64:
+        return value
+    return hashlib.sha256(b"kuma-controlled-provider-client").hexdigest()
+
+
+def _judge_request_sha256(
+    upload: _JudgeUpload,
+    fields: Mapping[str, str],
+    parts: Sequence[UploadPart],
+) -> str:
+    """Hash Judge fields and ordered part metadata without persisting Evidence.
+
+    Args:
+        upload: Validated Judge upload correlation.
+        fields: Exact multipart text fields that will be sent.
+        parts: Ordered upload parts; only byte lengths and SHA-256 digests enter
+            the local recovery identity.
+
+    Returns:
+        Canonical request digest stable across random multipart boundaries.
+
+    Security/Privacy:
+        Neither field bodies nor Evidence bytes are returned or persisted. The
+        digest cannot be used to reconstruct their content.
+    """
+    return canonical_request_sha256(
+        {
+            "run_id": upload.run_id,
+            "fields": {
+                name: hashlib.sha256(value.encode("utf-8")).hexdigest()
+                for name, value in sorted(fields.items())
+            },
+            "parts": [
+                {
+                    "name": part.name,
+                    "filename": part.filename,
+                    "content_type": part.content_type,
+                    "size": len(part.data),
+                    "sha256": hashlib.sha256(part.data).hexdigest(),
+                }
+                for part in parts
+            ],
+        }
+    )
+
+
 def _custom_case_part(
     context: JudgeContext, config: _JudgeConfig, part_prefix: str
 ) -> tuple[UploadPart, list[Any]]:
-    """Serialize a custom public Case for Judge upload and return privacy findings."""
-    custom_case = {
-        "schema_version": "defuzex.custom_case.v1",
-        "case_id": context.case.case_id,
-        "input_type": context.case.input_type,
-        "input_schema": plain_json(context.case.input_schema),
-        "inputs": [
-            {
-                "input_id": item.input_id,
-                "payload_type": item.payload_type,
-                "payload": plain_json(item.payload),
-                "public_constraints": plain_json(item.public_constraints),
-            }
-            for item in context.case.inputs
-        ],
-    }
+    """Serialize one already-preflighted custom Case under dynamic limits.
+
+    Args:
+        context: Completed custom-Case Run context.
+        config: Validated public Judge upload limits.
+        part_prefix: Collision-safe multipart prefix used by batch uploads.
+
+    Returns:
+        Bounded custom Case multipart part and findings from a defensive rescan
+        of the exact serialized public projection.
+
+    Raises:
+        LimitExceededError: If the UTF-8 Case bytes exceed the advertised
+            per-file limit.
+        ProviderError: If a Case field cannot be projected as public JSON.
+
+    Preconditions:
+        :func:`_preflight_custom_case_privacy` ran before any Judge config GET.
+
+    Postconditions:
+        Success returns bytes ready for the final combined Evidence limits;
+        policy enforcement still occurs in ``_prepare_upload`` before POST.
+
+    Side Effects:
+        None. No filesystem or network operation occurs.
+
+    Security/Privacy:
+        The exact upload projection is scanned again at the transport boundary;
+        findings retain no matched values.
+    """
+    custom_case = _custom_case_upload(context)
     case_bytes = json.dumps(
         custom_case,
         ensure_ascii=False,
@@ -91,8 +162,92 @@ def _custom_case_part(
         content_type="application/json",
         data=case_bytes,
     )
-    return part, list(
-        scan_sensitive_text(case_bytes.decode("utf-8"), location="custom_case")
+    return part, list(scan_sensitive_json(custom_case, location="custom_case"))
+
+
+def _custom_case_upload(context: JudgeContext) -> dict[str, Any]:
+    """Project the exact public custom Case fields accepted by Judge upload.
+
+    Args:
+        context: Validated Judge context whose Case lacks official provenance.
+
+    Returns:
+        Detached JSON mapping later serialized as the custom Case multipart
+        part. Rubrics, extensions, logs, and other private/local state are absent.
+
+    Raises:
+        ProviderError: If a public Case field is not valid detached JSON.
+
+    Postconditions:
+        The returned shape is suitable for both early privacy preflight and the
+        final bounded multipart serializer, so both scan the same public facts.
+
+    Side Effects:
+        None. This function performs no filesystem read or network request.
+
+    Security/Privacy:
+        Only public Case identity, type/schema, inputs, payloads, and public
+        constraints are projected. Caller-authored Rubric fields are rejected,
+        never ignored or included.
+    """
+    validate_custom_case_public_data(context.case)
+    case_id = required_text(context.case.case_id, "custom Case case_id")
+    if len(case_id) > 64:
+        raise ProviderError(
+            "The custom Case identifier exceeds the Judge limit",
+            code="invalid_custom_case",
+        )
+    return {
+        "schema_version": "defuzex.custom_case.v1",
+        "case_id": case_id,
+        "input_type": context.case.input_type,
+        "input_schema": plain_json(context.case.input_schema),
+        "inputs": [
+            {
+                "input_id": item.input_id,
+                "payload_type": item.payload_type,
+                "payload": plain_json(item.payload),
+                "public_constraints": plain_json(item.public_constraints),
+            }
+            for item in context.case.inputs
+        ],
+    }
+
+
+def _preflight_custom_case_privacy(
+    context: JudgeContext, *, allow_sensitive: bool
+) -> None:
+    """Reject sensitive custom Case upload fields before Judge config I/O.
+
+    Args:
+        context: Completed Run context about to enter the official Judge.
+        allow_sensitive: Existing explicit ordinary-Evidence policy override.
+
+    Raises:
+        SensitiveDataError: If the custom Case projection contains a recognized
+            sensitive shape and the existing policy disallows it.
+        ProviderError: If the custom Case cannot be projected as public JSON.
+
+    Preconditions:
+        The caller has not fetched dynamic Judge configuration or started an
+        operation for this invocation.
+
+    Postconditions:
+        Success allows normal Judge preparation. Failure performs no Backend
+        request and creates no operation, reservation, or usage event.
+
+    Side Effects:
+        None.
+
+    Security/Privacy:
+        Scanning uses the same exact public projection as multipart generation;
+        findings expose rule IDs and a safe location, never matched values.
+    """
+    if _official_case_reference(context) is not None:
+        return
+    enforce_sensitive_policy(
+        scan_sensitive_json(_custom_case_upload(context), location="custom_case"),
+        allow_sensitive=allow_sensitive,
     )
 
 
@@ -228,19 +383,14 @@ class OfficialJudgeProvider:
                 self._run_locks[run_id] = lock
             return lock
 
-    def _operation_store(self, run_id: str) -> PendingOperationStore:
-        """Return the bounded pending-operation store owned by one Run."""
+    def _legacy_operation_store(self, run_id: str) -> PendingOperationStore:
+        """Return process-local operation state when no repository root is configured."""
         with self._idempotency_lock:
             store = self._operation_stores.get(run_id)
             if store is not None:
                 return store
-            path = (
-                None
-                if self._state_root is None
-                else self._state_root / run_id / "pending-judge.json"
-            )
             store = PendingOperationStore(
-                path,
+                None,
                 operation_type="judge",
                 base_url=self.client.base_url,
             )
@@ -333,12 +483,27 @@ class OfficialJudgeProvider:
         """
 
         run_id = self._run_id(context)
+        _preflight_custom_case_privacy(
+            context,
+            allow_sensitive=self.allow_sensitive,
+        )
         with self._run_lock(run_id):
             return self._judge_locked(context, run_id)
 
     def _judge_locked(self, context: JudgeContext, run_id: str) -> Mapping[str, Any]:
         """Resume an accepted Judge operation or prepare and submit one new operation."""
-        store = self._operation_store(run_id)
+        existing = self._active_request(run_id)
+        if existing is not None:
+            durable_root = self._durable_root()
+            assert durable_root is not None
+            store = store_for_existing(
+                durable_root,
+                existing,
+                base_url=self.client.base_url,
+                api_key_sha256=_client_credential_identity(self.client),
+            )
+        else:
+            store = self._legacy_operation_store(run_id)
         pending = store.load()
         if pending is not None and pending.operation_id is not None:
             return self._resume_judgment(store, pending.idempotency_key)
@@ -349,7 +514,41 @@ class OfficialJudgeProvider:
             config,
             idempotency_key=key,
         )
-        return self._submit_judgment(store, upload)
+        return self._submit_judgment(store, upload, existing=existing)
+
+    def _durable_root(self) -> Path | None:
+        """Return an existing repository root or select process-local fallback.
+
+        ``create_run`` always supplies its validated repository. Direct Provider
+        tests and custom integrations that omit a usable root retain the previous
+        process-local behavior instead of creating an arbitrary directory.
+        """
+        return (
+            self._state_root
+            if self._state_root is not None and self._state_root.is_dir()
+            else None
+        )
+
+    def _active_request(self, run_id: str) -> Any:
+        """Locate a durable nonterminal Judge record after process loss.
+
+        Returns:
+            Internal stored metadata when ``state_root`` names the repository,
+            otherwise ``None`` for direct process-local Provider use.
+
+        Side Effects:
+            Reads only bounded request-ledger metadata and performs no network.
+        """
+        durable_root = self._durable_root()
+        if durable_root is None:
+            return None
+        return find_active_request(
+            durable_root,
+            request_type="judgment",
+            run_id=run_id,
+            base_url=self.client.base_url,
+            api_key_sha256=_client_credential_identity(self.client),
+        )
 
     def _resume_judgment(
         self, store: PendingOperationStore, idempotency_key: str
@@ -361,11 +560,16 @@ class OfficialJudgeProvider:
             key_factory=lambda: idempotency_key,
             start=lambda _key, _deadline: {},
             wait_timeout=self.operation_wait_timeout,
+            accept_result=lambda value: self._accept_judgment(store, value),
         )
-        return _normalize_judgment(response)
+        return response
 
     def _submit_judgment(
-        self, store: PendingOperationStore, upload: _JudgeUpload
+        self,
+        store: PendingOperationStore,
+        upload: _JudgeUpload,
+        *,
+        existing: Any = None,
     ) -> Mapping[str, Any]:
         """Submit one multipart Judge operation and retain its key for safe replay."""
         fields = {"metadata": json.dumps(upload.metadata, separators=(",", ":"))}
@@ -375,9 +579,32 @@ class OfficialJudgeProvider:
         elif upload.case_part is not None:
             parts.insert(0, upload.case_part)
 
+        durable_root = self._durable_root()
+        if durable_root is not None:
+            request_sha256 = _judge_request_sha256(upload, fields, parts)
+            if existing is not None and existing.request_sha256 != request_sha256:
+                raise ProviderError(
+                    "The pending Judge request no longer matches Run history",
+                    code="operation_state_conflict",
+                )
+            if existing is None:
+                store = RequestOperationStore(
+                    durable_root,
+                    request_type="judgment",
+                    request_sha256=request_sha256,
+                    base_url=self.client.base_url,
+                    api_key_sha256=_client_credential_identity(self.client),
+                    run_id=upload.run_id,
+                    case_id=upload.case_id,
+                )
+
         def start_operation(key: str, deadline: float) -> Mapping[str, Any]:
             """POST the prepared Judge upload once per stable key and deadline."""
             kwargs: dict[str, Any] = {"idempotency_key": key}
+            if isinstance(store, RequestOperationStore) and isinstance(
+                self.client, BackendClient
+            ):
+                kwargs["client_request_id"] = store.client_request_id
             if isinstance(self.client, BackendClient):
                 kwargs["_deadline"] = deadline
                 kwargs["_expected_status"] = 202
@@ -394,8 +621,39 @@ class OfficialJudgeProvider:
             key_factory=lambda: upload.idempotency_key,
             start=start_operation,
             wait_timeout=self.operation_wait_timeout,
+            accept_result=lambda value: self._accept_judgment(store, value),
         )
-        return _normalize_judgment(response)
+        return response
+
+    @staticmethod
+    def _accept_judgment(
+        store: PendingOperationStore, response: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Validate a public Judgment and save its normalized public report.
+
+        The operation coordinator invokes this callback before committing the
+        succeeded state. Durable stores therefore never advertise a report until
+        both remote validation and atomic local report persistence succeed.
+        """
+        normalized = _normalize_judgment(response)
+        if isinstance(store, RequestOperationStore):
+            record = store.public_record()
+            if record.run_id is None:
+                raise ProviderError("Judge Run correlation is missing")
+            report = normalize_report(normalized, run_id=record.run_id)
+            report_payload = {
+                "schema_version": report.schema_version,
+                "report_id": report.report_id,
+                "run_id": report.run_id,
+                "status": report.status,
+                "confidence": report.confidence,
+                "stop_reason": report.stop_reason,
+                "issues": list(report.issues),
+                "evidence_gaps": list(report.evidence_gaps),
+                "extensions": dict(report.extensions),
+            }
+            store.save_public_report(plain_json(report_payload))
+        return normalized
 
     def judge_batch(
         self, contexts: Sequence[JudgeContext]
@@ -426,6 +684,11 @@ class OfficialJudgeProvider:
         """
 
         _validate_batch_contexts(contexts)
+        for context in contexts:
+            _preflight_custom_case_privacy(
+                context,
+                allow_sensitive=self.allow_sensitive,
+            )
         config = _judge_config(self.client.json("GET", "/sdk/judge/config/"))
         _validate_batch_contexts(contexts, max_batch_items=config.max_batch_items)
         uploads = tuple(

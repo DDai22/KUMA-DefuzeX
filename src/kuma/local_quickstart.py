@@ -49,7 +49,6 @@ class _LocalCaseProvider:
         return {
             "case_id": "case_local_quickstart_v1",
             "input_type": "text",
-            "rubric": {"rule": "exact_text_match"},
             "inputs": [
                 {
                     "input_id": "input_local_quickstart_v1",
