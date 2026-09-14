@@ -12,6 +12,7 @@ from typing import Any
 
 from ..contracts import JudgeBatchResult
 from ..errors import ConfigurationError, LimitExceededError, ProviderError
+from ..repository.case_artifacts import MAX_CASE_ARTIFACT_BYTES, official_original
 from ..repository.privacy import enforce_sensitive_policy, scan_sensitive_json
 from ..transport.backend import (
     BackendClient,
@@ -33,7 +34,6 @@ from ._official_judgment import normalize_official_judgment as _normalize_judgme
 from ._official_wire import (
     plain_json,
     required_text,
-    validate_official_case_provenance,
 )
 from .base import JudgeContext
 from .normalization import normalize_report, validate_custom_case_public_data
@@ -48,8 +48,10 @@ class _JudgeUpload:
     Attributes:
         run_id: Public Run identifier being judged.
         metadata: Safe manifest/history mapping sent as multipart metadata.
-        case_id: Official Case reference, or ``None`` for custom Case upload.
-        case_part: Serialized public custom Case part when required.
+        case_id: Legacy wire reference; new uploads use case_part instead.
+        local_case_id: Public Case locator retained in the local request ledger;
+            independent of the multipart case_id/case_file exclusive choice.
+        case_part: Serialized original official or public custom Case.
         log_parts: Bounded Evidence parts in deterministic order.
         idempotency_key: Stable key reused for retries of this exact Run history.
     """
@@ -60,6 +62,7 @@ class _JudgeUpload:
     case_part: UploadPart | None
     log_parts: tuple[UploadPart, ...]
     idempotency_key: str
+    local_case_id: str | None = None
 
 
 def _client_credential_identity(client: Any) -> str:
@@ -224,8 +227,9 @@ def _preflight_custom_case_privacy(
         allow_sensitive: Existing explicit ordinary-Evidence policy override.
 
     Raises:
-        SensitiveDataError: If the custom Case projection contains a recognized
-            sensitive shape and the existing policy disallows it.
+        SensitiveDataError: If the public Case projection contains a recognized
+            sensitive shape; official originals never permit policy overrides.
+        ValidationError: Official Inputs or provenance differ from their original.
         ProviderError: If the custom Case cannot be projected as public JSON.
 
     Preconditions:
@@ -257,8 +261,7 @@ def _official_case_reference(
     """Validate official provenance and return its opaque Backend reference metadata."""
     if "official_case" not in context.case.extensions:
         return None
-    official = context.case.extensions["official_case"]
-    provenance = validate_official_case_provenance(official)
+    _, provenance = official_original(context.case)
     metadata = {
         name: provenance[name]
         for name in ("repo_fingerprint", "case_sha256", "case_signature")
@@ -419,7 +422,14 @@ class OfficialJudgeProvider:
         part_prefix: str = "",
         idempotency_key: str | None = None,
     ) -> _JudgeUpload:
-        """Build and privacy-check an official or custom Case Judge upload."""
+        """Stage one Case and its Evidence under the advertised per-item limits.
+
+        Called by single and batch Judge preparation before POST. ``max_files``
+        counts the Case artifact plus all Evidence parts for this item.
+        Existing Evidence, Case and aggregate byte/privacy checks remain in
+        their respective paths. Returns staged parts without I/O;
+        raises stable size or privacy errors before request persistence/upload.
+        """
         run_id = self._run_id(context)
         log_parts, manifest, findings = _evidence_upload(context, config, part_prefix)
         metadata: dict[str, Any] = {
@@ -432,11 +442,38 @@ class OfficialJudgeProvider:
         case_id: str | None = None
         case_part: UploadPart | None = None
         if official is not None:
-            case_id, integrity = official
+            _, integrity = official
             metadata.update(integrity)
+            raw, _ = official_original(context.case)
+            encoded = json.dumps(
+                raw, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+            if len(encoded) > min(MAX_CASE_ARTIFACT_BYTES, config.max_file_bytes):
+                raise LimitExceededError(
+                    "Official Case exceeds the upload limit", code="invalid_case_file"
+                )
+            case_part = UploadPart(
+                name=f"{part_prefix}case" if part_prefix else "case_file",
+                filename="kuma-official-case.json",
+                content_type="application/json",
+                data=encoded,
+            )
+            if (
+                len(encoded) + sum(len(part.data) for part in log_parts)
+                > config.max_total_bytes
+            ):
+                raise LimitExceededError(
+                    "Case and Evidence exceed the upload limit",
+                    code="log_size_exceeded",
+                )
         else:
             case_part, case_findings = _custom_case_part(context, config, part_prefix)
             findings.extend(case_findings)
+        if len(log_parts) + 1 > config.max_files:
+            raise LimitExceededError(
+                "Case and Evidence exceed the upload limit",
+                code="log_size_exceeded",
+            )
         enforce_sensitive_policy(findings, allow_sensitive=self.allow_sensitive)
         return _JudgeUpload(
             run_id=run_id,
@@ -445,6 +482,7 @@ class OfficialJudgeProvider:
             case_part=case_part,
             log_parts=log_parts,
             idempotency_key=idempotency_key or self._idempotency_key(run_id),
+            local_case_id=context.case.case_id,
         )
 
     def judge(self, context: JudgeContext) -> Mapping[str, Any]:
@@ -595,7 +633,7 @@ class OfficialJudgeProvider:
                     base_url=self.client.base_url,
                     api_key_sha256=_client_credential_identity(self.client),
                     run_id=upload.run_id,
-                    case_id=upload.case_id,
+                    case_id=upload.local_case_id,
                 )
 
         def start_operation(key: str, deadline: float) -> Mapping[str, Any]:
@@ -662,7 +700,9 @@ class OfficialJudgeProvider:
 
         Args:
             contexts: Non-empty unique-Run completed contexts, no larger than the
-                Backend-advertised ``max_batch_items``.
+                Backend-advertised ``max_batch_items``. Each item's Case and
+                Evidence share ``max_files``; it is not a batch-wide count.
+                The existing aggregate multipart byte budget also applies.
 
         Returns:
             Tuple in request order. Each :class:`JudgeBatchResult` contains
@@ -704,6 +744,11 @@ class OfficialJudgeProvider:
             item, item_parts = _batch_item(upload)
             items.append(item)
             parts.extend(item_parts)
+        if sum(len(part.data) for part in parts) > config.max_total_bytes:
+            raise LimitExceededError(
+                "Case and Evidence exceed the batch upload limit",
+                code="log_size_exceeded",
+            )
         response = self.client.multipart(
             "/sdk/judge/batch/",
             {"batch": json.dumps({"items": items}, separators=(",", ":"))},

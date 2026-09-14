@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,8 @@ from .providers._official_wire import validate_official_case_provenance
 from .providers.base import CaseGenerationContext, CaseProvider, JudgeProvider
 from .providers.normalization import normalize_case
 from .repository.agent_profiles import AgentProfileSpec, parse_agent_profile
+from .repository.case_artifact_io import load_case_artifact
+from .repository.case_artifacts import LoadedCaseProvider, official_original
 from .repository.metadata import collect_repo_meta
 from .repository.privacy import enforce_sensitive_policy, scan_sensitive_text
 from .repository.strategy_groups import (
@@ -43,6 +46,7 @@ from .repository.strategy_groups import (
 from .run import Run
 from .runtime import RuntimeSession
 from .transport.backend import DEFAULT_BASE_URL, BackendClient
+from .transport.catalog_cache import read_strategy_catalog
 
 
 def configure(*, api_key: str) -> Path:
@@ -409,15 +413,21 @@ def _resolve_official_strategy_group(
     agent_profile: AgentProfileSpec | None,
     available_capabilities: tuple[str, ...],
 ) -> ResolvedStrategyGroup | None:
-    """Fetch and resolve the Strategy Group contract for an official Case.
+    """Read cached discovery and resolve the group anew for each official Case.
 
     New catalogs always produce one exact selection. A bounded legacy catalog
     keeps the old Case wire only when the user did not explicitly declare a
-    Strategy Group; explicit intent cannot be silently downgraded.
+    Strategy Group; explicit intent cannot be silently downgraded. Selection and
+    required-capability validation execute on every call, including cache hits.
+    Default transports share credential-isolated catalogs for at most 60 seconds
+    after validation; custom transports bypass caching. Failed refreshes never
+    use stale entries. No paid request identity or Run lifecycle is changed.
     """
     if backend is None:
         return None
-    catalog_value = backend.json("GET", "/sdk/strategies/")
+    catalog_value = read_strategy_catalog(
+        backend, fetch=lambda: backend.json("GET", "/sdk/strategies/")
+    )
     explicit = None if agent_profile is None else agent_profile.strategy_group
     if is_legacy_strategy_catalog(catalog_value):
         if explicit is not None:
@@ -439,10 +449,71 @@ def _resolve_official_strategy_group(
     )
 
 
+def _prepare_case_source(
+    *,
+    repo_path: str | os.PathLike[str],
+    case_path: str | os.PathLike[str] | None,
+    case_provider: Any,
+    agent_profile_path: str | os.PathLike[str] | None,
+    config: CreateRunConfig,
+) -> tuple[
+    CaseProvider | None,
+    AgentProfileSpec | None,
+    CreateRunConfig,
+    LoadedCaseProvider | None,
+]:
+    """Select generated versus explicitly loaded Case before any external effects.
+
+    Args:
+        repo_path: Repository used to resolve a relative artifact file.
+        case_path: Optional saved artifact; None retains generation preflight.
+        case_provider: Caller provider, forbidden alongside a file.
+        agent_profile_path: Generation Profile, forbidden alongside a file.
+        config: Pure validated options; loading requires auto and never truncates.
+    Returns:
+        Provider, optional Profile, effective limits, and typed loaded-source marker.
+    Raises:
+        ConfigurationError: Conflicting input modes or unsafe/unreadable local path.
+        ValidationError: Invalid artifact or explicit step ceiling below its count.
+    Side Effects:
+        Only an explicitly selected bounded file may be read. No credentials,
+        catalog, CaseGen, runtime, or Evidence setup happens at this boundary.
+    """
+    if case_path is None:
+        provider, profile = _prepare_case_agent_profile(
+            case_provider, agent_profile_path
+        )
+        return provider, profile, config, None
+    if (
+        case_provider is not None
+        or agent_profile_path is not None
+        or config.strategy != "auto"
+    ):
+        raise ConfigurationError(
+            "case_path cannot be combined with a Provider, Profile, or strategy selection"
+        )
+    data = load_case_artifact(
+        _resolve_repo_path(repo_path), case_path, alias=_repo_root_alias(repo_path)
+    )
+    loaded = LoadedCaseProvider(data)
+    if config.max_steps is not None and config.max_steps < loaded.count:
+        raise ValidationError(
+            "Saved Case exceeds max_steps; it cannot be truncated",
+            code="case_artifact_invalid",
+        )
+    return (
+        loaded,
+        None,
+        replace(config, max_steps=config.max_steps or loaded.count),
+        loaded,
+    )
+
+
 def create_run(
     *,
     repo_path: str | os.PathLike[str] = ".",
     agent_profile_path: str | os.PathLike[str] | None = None,
+    case_path: str | os.PathLike[str] | None = None,
     case_provider: Any = None,
     judge_provider: Any = None,
     strategy: str = "auto",
@@ -479,6 +550,12 @@ def create_run(
             before Provider I/O and remains local on the current official wire.
         case_provider: :class:`CaseProvider` or compatible callable. ``None``
             selects the official authenticated provider.
+        case_path: Explicit saved Case artifact inside repo_path, or None to
+            generate normally. Relative paths use repo_path, not cwd. Cannot be
+            combined with case_provider, agent_profile_path, or non-auto strategy.
+            Loading performs no CaseGen/catalog request; preserves original IDs,
+            order and content while assigning a new Run ID. Official origin never
+            falls back to custom. max_steps=None accepts the full saved count.
         judge_provider: :class:`JudgeProvider` or compatible callable. ``None``
             selects the official provider when ``judge=True``.
         strategy: ``"auto"`` or an explicit public strategy ID. The SDK never
@@ -497,9 +574,13 @@ def create_run(
             create a sandbox or relax path, privacy, and protocol validation.
         track_files: Capture bounded repository file metadata before and after
             each input.
-        upload_diff: Include bounded safe text diffs. Requires
-            ``track_files=True`` and may expose selected repository text to the
-            configured Judge after sensitive scanning.
+        upload_diff: Send bounded safe unified diffs to the configured Judge.
+            The default ``False`` sends file hashes/metadata only. ``True``
+            requires ``track_files=True`` and explicit Backend support for the
+            named ``file_diff`` capability; unsupported services raise before
+            the Judge POST instead of silently downgrading. Patches are never
+            truncated or expanded to whole-file uploads, and sensitive text is
+            replaced by a content-free omission reason.
         save_local: Persist committed Submission records under the SDK-owned
             ``.kuma/runs/<run_id>/`` directory using atomic replacement.
         allow_sensitive: Permit ordinary Evidence that triggers the scanner in
@@ -517,10 +598,10 @@ def create_run(
             :func:`kuma.otel.configure_trace_evidence`. ``None`` attempts to
             reuse a compatible configured global OTel provider; unavailable OTel
             becomes a non-blocking ``runtime_warnings`` entry.
-        scan_strategy_group: Explicitly enable conservative local Strategy Group
-            suggestion. KUMA compares only canonical Evidence capabilities from
-            the reviewed tool declaration and Run configuration; it never runs
-            tools or guesses from names, schemas, resources, or descriptions.
+        scan_strategy_group: Disabled automatic matching flag; keep ``False``.
+            ``True`` raises ``ConfigurationError(config_invalid)`` before file
+            or network I/O, even with an explicit group or custom provider.
+            Privacy scanning and Evidence capability validation remain enabled.
 
     Returns:
         A synchronous :class:`Run` in ``ready`` state. Use ``get_input`` and
@@ -576,9 +657,12 @@ def create_run(
     )
     if config.upload_diff and not config.track_files:
         raise ConfigurationError("upload_diff requires track_files=True")
-    adapted_case_input, agent_profile = _prepare_case_agent_profile(
-        case_provider,
-        agent_profile_path,
+    adapted_case_input, agent_profile, config, loaded = _prepare_case_source(
+        repo_path=repo_path,
+        case_path=case_path,
+        case_provider=case_provider,
+        agent_profile_path=agent_profile_path,
+        config=config,
     )
     _preflight_official_agent_profile_privacy(
         agent_profile,
@@ -603,6 +687,8 @@ def create_run(
         trace_evidence=trace_evidence,
         agent_profile=agent_profile,
     )
+    if loaded is not None:
+        official_case = loaded.origin == "official"
 
     run_id = f"run_{uuid.uuid4().hex}"
     runtime = RuntimeSession.open(
@@ -615,10 +701,12 @@ def create_run(
         effective_max_steps = config.max_steps or (
             DEFAULT_CASE_MAX_STEPS if official_case else 50
         )
-        repo_meta = collect_repo_meta(resolved_repo)
+        repo_meta = (
+            {} if loaded is not None else collect_repo_meta(resolved_repo).to_dict()
+        )
         context = CaseGenerationContext(
             repo_path=resolved_repo,
-            repo_meta=repo_meta.to_dict(),
+            repo_meta=repo_meta,
             agent_profile=None if agent_profile is None else agent_profile.content,
             agent_description=(
                 None if agent_profile is None else agent_profile.agent_description
@@ -661,6 +749,8 @@ def create_run(
         official_provenance = case.extensions.get("official_case")
         if official_case:
             validate_official_case_provenance(official_provenance)
+            if loaded is not None:
+                official_original(case)
         elif "official_case" in case.extensions:
             raise ProviderError(
                 "Custom Case Provider returned reserved official_case metadata",

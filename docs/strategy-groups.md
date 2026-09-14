@@ -1,4 +1,53 @@
 # KUMA Strategy Groups
+## Inspect actual execution
+
+After `create_run(...)` succeeds, inspect `run.executed_strategy_group`:
+
+```python
+actual = run.executed_strategy_group
+if actual is None:
+    print("Execution group unconfirmed (historical server/result or custom Run)")
+else:
+    print(actual["strategy_group_id"], actual["strategy_group_version"])
+    print(actual["catalog_release"])
+```
+
+This read-only mapping contains exactly `schema_version` (always
+`kuma.executed_strategy_group.v1`), `strategy_group_id`, `strategy_group_version`,
+and `catalog_release`. It comes from server-reported actual execution, not a
+request echo or current catalog lookup. When a Group was submitted, all three
+coordinates must match before the SDK completes the request. Without a submitted
+Group, only the returned shape is validated; no request match is implied.
+Missing historical data stays `None`, not a guessed default. Malformed/null or
+mismatched data raises `ProviderError(code="invalid_response")`; recovery keeps
+the original operation and polls by GET, without a second paid POST.
+
+This is validated execution metadata, **not independent cryptographic proof**:
+it is outside the existing signed raw Case and is not added to Judge wire.
+The public `strategy_id`/`strategy_version` (for example `coding@1`) remain
+compatibility coordinates, not disclosure of an actual private strategy member.
+
+## Discovery cache and refresh
+
+Official `create_run` calls share validated catalogs within one process for at
+most **60 seconds after successful validation**, with a **32-entry LRU** keyed
+by canonical Backend URL and the exact credential fingerprint. Different keys,
+URLs and processes do not share entries; custom transports bypass this cache.
+The cache contains discovery metadata, not Agent content, request bodies or keys.
+
+`kuma strategies list`, `KumaClient.strategies()` and
+`KumaClient.strategy_group_catalog()` always fetch a fresh catalog. A failed
+refresh invalidates the previous value; there is no stale-on-error fallback.
+Concurrent Run lookups share one GET. Waiters stop after the smaller of their
+HTTP timeout and 30 seconds, without starting replacement GETs automatically.
+Each Run still checks its selection and required capabilities, even on a hit.
+
+Availability can be up to 60 seconds old; the server remains authoritative.
+Refreshing metadata does not change a pending request's catalog release or
+idempotency identity, and never automatically retries a paid Case/Judge request.
+This optimization removes redundant discovery GETs, not Case/Judge execution:
+with the default Judge enabled, the final `run.submit(...)` also waits for Judge.
+
 
 [English](strategy-groups.md) | [简体中文](strategy-groups.zh-CN.md)
 
@@ -64,32 +113,25 @@ An explicit coordinate has priority. An unknown or unavailable group fails close
 
 When `strategy_group` is omitted, KUMA uses the catalog's exact `default.id` and `default.version`. The selection source is semantically “general”; `general` is not a fixed group ID.
 
-## Optional conservative local suggestion
+## Automatic matching is disabled
 
-Suggestion is disabled by default. Enable it explicitly for an official Run:
+Keep `scan_strategy_group=False` (the default). Passing `True` raises
+`ConfigurationError(code="config_invalid")` before file or network I/O, even
+with an explicit group or custom provider. With `strategy="auto"` and no
+explicit Profile group, KUMA always uses the catalog's exact default coordinate;
+it never selects a different group from tool metadata or Evidence capabilities.
 
-```python
-from kuma import create_run
+`kuma strategies suggest` is also disabled and exits nonzero with a safe
+explanation. Legacy `--catalog`, `--capabilities`, and `--output` arguments
+are not read or written. Use `kuma strategies list` to inspect the catalog and
+declare a group explicitly when you need a non-default choice.
 
-run = create_run(
-    repo_path=".",
-    agent_profile_path="agent-profile.md",
-    scan_strategy_group=True,
-)
-```
-
-KUMA compares only the closed Runtime Evidence capability set declared in a reviewed local Agent capability file plus intrinsic Evidence enabled for the Run. It does not run tools or infer capability from tool names, descriptions, schemas, resources, access, or side effects. It selects a non-default group only when one reliable best match exists; a tie or no reliable match uses the catalog default.
-
-To review the same conservative suggestion without creating a Run or making a network request, use previously saved local files:
-
-```bash
-kuma strategies suggest \
-  --catalog strategy-groups.json \
-  --capabilities agent-capabilities.json \
-  --output strategy-group.json
-```
-
-`--catalog` and `--capabilities` are required. `--output` is optional; without it, the Agent Profile-ready `{schema_version, id, version}` object is printed. The local catalog and capability document are validated before selection. See [Agent tool capabilities](agent-tool-capabilities.md) for the capability-file schema.
+Privacy scanning and [Agent capability validation](agent-tool-capabilities.md)
+remain active. Declared `evidence_types` plus intrinsic Run capabilities are
+still checked against the selected group's `required_capabilities`; they do
+not choose the group. Low-level `resolve_strategy_group(scan=True)` rejects
+with the same configuration error. Historical `selection_source="scanner"`
+wire remains parseable for recovery, but no new matching is performed.
 
 ## Python API
 
@@ -111,6 +153,6 @@ Public immutable types include `StrategyGroupDeclaration`, `StrategyGroup`, `Str
 
 ## Privacy and compatibility
 
-Catalog discovery and official group resolution require authentication. The local suggestion path does not upload the capability file, tool names, argument schemas, resource scopes, paths, Agent configuration, or raw Agent Profile. Official Case creation sends only the resolved public coordinate, catalog release, and low-sensitivity selection source.
+Catalog discovery and official group resolution require authentication. KUMA does not upload the capability file, tool names, argument schemas, resource scopes, paths, Agent configuration, or raw Agent Profile. Official Case creation sends only the resolved public coordinate, catalog release, and low-sensitivity selection source.
 
 If an older public service does not support versioned Strategy Groups, an explicit declaration fails rather than changing user intent. Omitted selection may use the strictly validated legacy behavior supported by the SDK.

@@ -4,6 +4,29 @@
 
 本文记录稳定的用户侧 Python API。参数类型、默认值、范围、副作用和失败语义均以当前实现为准。KUMA 的主要 API 使用仅关键字参数，调用时应保留参数名。
 
+## `check_for_updates`
+
+```python
+from kuma import check_for_updates
+
+update = check_for_updates()
+print(update["status"], update["latest_version"], update["release_url"])
+```
+
+无参数。返回独立字典：`status` 为 `disabled`、`checking`、`unavailable`、
+`up_to_date`、`optional`（新补丁）或 `required`（新主/次版本）；
+`current_version` 是本地版本字符串，`latest_version`/`release_url` 是已校验的
+官方发行版信息或 `None`，`cached` 是布尔值。required 是必须升级的强提醒，
+不拒绝请求、不自动安装。
+
+显式调用最多执行一次匿名 GitHub HTTPS 请求（socket 超时 1 秒、64 KiB 上限、
+不重试）；普通失败返回 unavailable，并发检查直接返回 checking，不等待。
+成功/失败在当前进程缓存 24 小时。`KUMA_DISABLE_UPDATE_CHECK=1` 连显式调用
+也禁用。不读取凭据、不发送 Agent 数据、不写磁盘、不走代理/重定向。官方传输
+复用同一检查器的 daemon 后台线程；import/help/local/custom 不检查。
+等价 CLI：`kuma updates check`，JSON 写 stdout、退出码为 0。
+全部字段及生命周期限制见[版本发布规范](releases.md)。
+
 ## `configure`
 
 ```python
@@ -44,6 +67,7 @@ run = create_run(repo_path=".", agent_profile_path="agent-profile.md")
 | --- | --- | --- | --- |
 | `repo_path` | `str \| os.PathLike[str]` | `"."` | 指定“这次要测试哪个仓库”。KUMA 会读取该目录下的有界元数据，并在启用文件追踪时观察其中的文件变化。如果 Python 正在仓库根目录运行，保留 `"."` 即可。 |
 | `agent_profile_path` | `str \| os.PathLike[str] \| None` | `None` | 指向描述被测 Agent、生产场景、预期行为和禁止边界的 UTF-8 文件。官方 Case 必须提供。选定的策略组仍决定测试能力、领域和方法，Profile 自然语言不能选组或覆盖该选择。Front matter 可包含 closed `strategy_group` 坐标和相对路径 `tool_capabilities` 文件，两者都会在 Provider I/O 前校验。只有自定义 Case Provider 明确不需要 Agent Profile 时才可省略。 |
+| `case_path` | `str \| os.PathLike[str] \| None` | `None` | 加载完整 `kuma.case_artifact.v1` 文件，不重新生成 Case。相对路径基于 `repo_path` 而非 cwd；不能与 `case_provider`、`agent_profile_path` 或非 `auto` strategy 同用。最多读取 5 MiB，在凭据和 runtime 初始化前校验，不调用 CaseGen/目录；`max_steps=None` 使用保存的完整步数，显式值更小时报错、不截断。官方 Judge 仍需凭据并核验服务端原件。 |
 | `case_provider` | `CaseProvider \| callable \| None` | `None` | 决定由谁生成测试步骤。保留 `None` 会向 KUMA 官方服务申请 Case；传入 callable 表示由你的程序在本地提供 Case。 |
 | `judge_provider` | `JudgeProvider \| callable \| None` | `None` | 决定由谁评估全部步骤并生成最终报告。保留 `None` 使用官方 Judge；传入 callable 使用你自己的本地评估逻辑。`judge=False` 时不会使用它。 |
 | `strategy` | `str` | `"auto"` | 保留仅使用未版本化 strategy ID 的服务兼容性。当前策略组应在 Agent Profile front matter 中填写精确 `id` 与 `version`。结构化声明与非默认旧值同时出现时会直接失败，避免产生歧义。 |
@@ -52,7 +76,7 @@ run = create_run(repo_path=".", agent_profile_path="agent-profile.md")
 | `on_failure` | `str` | `"continue"` | 决定某一步被提交为 `failed`、`timeout` 或 `aborted` 后怎么办。`"continue"` 会继续交付下一个 Input；`"stop"` 会立即结束整个 Run。 |
 | `allow_local` | `bool` | `False` | 允许在 Docker 外启动可信的本地开发 Run。它只绕过 Docker 要求，不会隔离 Agent、扩大文件权限，也不会关闭校验或隐私保护。 |
 | `track_files` | `bool` | `True` | 让 KUMA 在每个 Input 前后比较仓库文件，从而告诉 Judge 哪些文件被创建、修改、删除或重命名。文件变化与评估无关或无法观察时可设为 `False`。 |
-| `upload_diff` | `bool` | `False` | 除路径、哈希、大小和变化类型外，再把有界的实际文本改动加入 Evidence。只有 Judge 必须查看代码差异且仓库文本允许披露时才开启；要求 `track_files=True`。 |
+| `upload_diff` | `bool` | `False` | 通过协商的 `file_diff` 发送安全 unified patch，要求 `track_files=True`。默认 False 仅传哈希；服务端不支持时在 Judge POST 前报错。超限、二进制或敏感补丁整项省略并给原因，不截断。见[限制说明](runtime-trace.zh-CN.md)。 |
 | `save_local` | `bool` | `False` | 把每个已成功提交的 Submission 额外保存为 `.kuma/runs/<run_id>/` 下的 JSON，便于调试和审计。它只是本地副本，不能替代提交给官方 Judge。 |
 | `allow_sensitive` | `bool` | `False` | 当普通 Evidence 被扫描器判断为可能敏感时，是否仍允许继续。默认应保持 `False`；只有人工确认内容可以披露时才开启，而且它永远不能让秘密进入 OTel Trace Evidence。 |
 | `timeout` | `float` | `300.0` 秒 | 限制一次连接 KUMA 公网服务的 HTTP 请求最多等待多久。调小后单次网络失败会更快返回；它不限制 Case 生成或 Judge 的总等待时间。 |
@@ -60,7 +84,7 @@ run = create_run(repo_path=".", agent_profile_path="agent-profile.md")
 | `max_retries` | `int` | `2` | 设置一次瞬态 HTTP 失败后最多再尝试几次，允许 0–5。重试会复用同一个幂等键，不会故意创建第二个 Case/Judge operation。 |
 | `api_key` | `str \| None` | `None` | 为“这一个 Run”提供官方服务凭证，用于临时覆盖环境变量或已保存凭证。`None` 时依次读取 `KUMA_API_KEY` 和用户凭证文件；Case/Judge 都是本地 Provider 时不需要 Key。 |
 | `trace_evidence` | `TraceEvidenceCapture \| None` | `None` | 为本次 Run 指定一份 OTel Trace 采集器及其资源上限。需要显式控制时传入 `configure_trace_evidence()` 的返回值；`None` 时 KUMA 会尝试复用兼容的全局 Provider，没有则继续运行并记录非阻断 warning。 |
-| `scan_strategy_group` | `bool` | `False` | 明确启用官方 Case 的本地保守策略组建议。KUMA 只比较 closed 声明能力与本次 Run 的内在 Runtime Evidence 能力，不执行工具，也不根据名称、描述、Schema、资源、访问方式或副作用猜测。只有唯一可靠匹配时才选择非默认组；同分或无匹配时使用目录精确默认组。Agent Profile 中的显式选择始终优先。 |
+| `scan_strategy_group` | `bool` | `False` | 自动匹配已禁用：保持 `False`。传 `True` 在文件读取或网络前抛 `ConfigurationError(config_invalid)`，即使已显式选组或使用 Custom Provider 也会拒绝。隐私扫描与 Evidence 能力校验仍然保留。 |
 
 <!-- api-parameters:create_run:end -->
 
@@ -107,6 +131,29 @@ BOM，校验 closed front matter 和三个必需行为章节，并返回不可�
 
 ## `Run`
 
+### `save_case`
+
+<!-- api-parameters:save_case:start -->
+
+| 参数 | 类型 | 必填/默认值 | 用途与用法 |
+| --- | --- | --- | --- |
+| `path` | `str \| os.PathLike[str]` | 必填 | 保存到该 Run 仓库内部；相对路径从仓库根解析。父目录须已存在，请使用新文件名：已有文件、symlink、跨 mount 逃逸及并发覆盖都会拒绝。 |
+
+<!-- api-parameters:save_case:end -->
+
+**返回值：** 完整 UTF-8 Case 文件的绝对 `Path`，整文件最多 5,242,880 bytes。
+**前置条件：** Run 已持有完整有效 Case；官方 Case 必须保有原始公共记录。
+**后置条件：** 不改变 Run 状态、history 或 Input 位置，不保存运行 ID、Evidence、
+Agent 输出、Rubric 或凭据。**异常：** 内容无效/被改动时
+`ValidationError(case_artifact_invalid)`；来源冲突时
+`ValidationError(case_origin_invalid)`；敏感/私有内容为 `SensitiveDataError`；
+路径不安全、不可写或已存在为 `ConfigurationError`。**副作用：** 有界原子写文件，
+不联网，隐私检查不能关闭。公开 checksum 只能检测损坏，不能证明真实性；官方
+Judge 仍校验当前租户的服务端原件。参见[保存与加载示例及 wire 边界](case-files.zh-CN.md)。
+
+`run.case_origin` 是只读 `"official" | "custom"`，表示 Case 来源而不是 Judge
+类型；使用官方 Judge 不会把自定义 Case 变成官方 Case。
+
 ### `get_input`
 
 <!-- api-parameters:get_input:start -->
@@ -151,6 +198,14 @@ BOM，校验 closed front matter 和三个必需行为章节，并返回不可�
 
 ### `judge`
 
+Backend 广告的 `max_files` 为支持的最大 Case 步数 × 2（当前 10 × 2 = 20），
+不是本次 Run 的实际步数 × 2。Case 文件和每份 Evidence 各占一个名额。
+Batch Judge 按每个 item 分别计算，不将整批相加；SDK 不硬编码 20。
+文件数超限在 Judge POST 前拒绝。字节和隐私检查保持：Backend 对每项强制
+检查 Case+Evidence 合计字节，包括自定义 Case；SDK 保留各路径原有字节检查
+和保守的整批字节上限。本次不新增自定义 Case 单次 Judge 的合计字节预检。
+应先部署配套 Backend；客户端仍遵守旧 Backend 返回的较小上限。
+
 <!-- api-parameters:judge:start -->
 
 | 参数 | 类型 | 必填/默认值 | 它控制什么、什么时候填写 |
@@ -187,6 +242,7 @@ BOM，校验 closed front matter 和三个必需行为章节，并返回不可�
 | `case_id` | `str` | 标识本次正在执行的公开 Case，可安全用于关联，但不会暴露 Private Rubric。 |
 | `max_steps` | `int` | 表示最终生成的 Case 实际包含多少个步骤；至少为 1，且不会超过显式传入的 `create_run(max_steps=...)` 上限，参数为 `None` 时则不超过服务或本地默认上限。 |
 | `state` | `RunState` | 告诉你现在允许做什么，例如获取 Input、提交、等待 Judge、已经完成或已取消。 |
+| `executed_strategy_group` | `Mapping[str, str] \| None` | 脱离内部对象的只读执行元数据：schema_version、strategy_group_id（1–80 字符）、strategy_group_version（1–32）、catalog_release（64 位小写十六进制）。历史缺失/自定义 Run 返回 None，不拿请求或默认组代填。读取不触发 I/O；实际提交的坐标在成功前核对，错误在创建/恢复时抛 invalid_response。这不是独立加密证明，也不属于原始 Case 签名或 Judge wire。 |
 | `history` | `tuple[HistoryItem, ...]` | 按执行顺序保存所有已成功提交的 Input 及对应 Submission；正在处理但尚未提交的步骤不在其中。 |
 | `report` | `TestReport \| None` | `state` 变为 `report_ready` 后保存最终 Judge 结果；Judge 尚未完成或 `judge=False` 时为 `None`。 |
 | `runtime_warnings` | `tuple[str, ...]` | 保存不会阻断 Run 的 Evidence 缺口代码，例如自动 Trace 不可用；可用它向用户提示采集不完整。 |
@@ -310,7 +366,7 @@ Rubric、Prompt 或 Provider 响应。已知 operation 只通过 GET 继续轮�
 | `max_spans` | 正 `int` | `200` | 每步通过确定性采样最多保留这么多个已结束 span，被丢弃的 span 会计数。此每步上限与 Run 总字节预算独立。 |
 | `max_attributes` | 正 `int` | `32` | 每个 span 最多保留这么多个安全 allowlist 属性；其余属性被丢弃并计数。无论数字多大，敏感属性仍会被拒绝。 |
 | `max_events_per_span` | 正 `int` | `20` | 每个 span 最多保留这么多个安全 OTel event；更晚的 event 会被丢弃并记录。 |
-| `max_text_length` | 正 `int` | `256` 字符 | 每个允许保留的文本值超过该 Unicode 字符数后会被截断，并记录 truncated 状态。 |
+| `max_text_length` | 正 `int` | `256` 字符 | 限制保留的元数据文本；工具参数/结果使用独立的 4 MiB canonical JSON 上限，绝不截断。见 [Runtime Trace](runtime-trace.zh-CN.md)。 |
 | `max_total_bytes` | 正 `int` | `8388608` 字节（8 MiB） | 一个 Run 的全部已提交 Trace envelope 紧凑 JSON 合计不能超过该值；KUMA 会确定性丢弃超额 Trace 并报告损失，但该值本身必须能容纳最小合法 envelope。 |
 | `max_log_records` | 正 `int` | `200` | 每个步骤最多保留的规范化 OTel 日志记录数；超出部分会丢弃并记录。 |
 | `max_log_bytes` | 正 `int` | `128000` 字节 | 一个 Run 中已提交的结构化 OTel 日志 artifact 总字节上限；不会保留原始日志正文。 |
@@ -338,3 +394,39 @@ Rubric、Prompt 或 Provider 响应。已知 operation 只通过 GET 继续轮�
 ## 错误字段
 
 普通 SDK 失败统一捕获 `KumaError`。`str(exc)` 是安全的用户文案；程序判断使用 `exc.code`、`exc.retryable` 和 `exc.request_id`。`exc.details` 是有界公开 mapping，也只应通过应用自己的 allowlist 记录。
+
+`request_id: str | None` 仅保留实际 `X-Request-ID` 响应头中恰好 32 位小写十六进制值。缺失、非法或重复头均为 `None`；SDK 不生成替代值，也不从 JSON 正文取 ID。异步终态错误关联那次轮询响应，不是 operation 或启动请求。独立的 `kreq_…` 格式 `client_request_id` 仍是本地恢复身份。合法头也可能是服务端回显的值，而非服务端生成；它不是认证凭证。
+
+解码、大小、状态或 operation 启动/轮询/结果 schema 校验失败，也仅关联正在校验的响应 ID；无响应的网络失败及本地持久化错误不会使用之前的 ID。
+
+远端错误详情按错误码使用精确 schema，HTTP 失败和异步 failed operation 共用校验：
+
+| `exc.code` | 允许的 `exc.details` | 校验规则 |
+| --- | --- | --- |
+| `case_step_limit_exceeded` | `{"max_allowed_steps": 10}` | 必填、非布尔整数，范围 1–10。 |
+| `unsupported_difficulty` | `{"supported_difficulties": ["D0", "D2"]}` | D0–D4 中 1–5 个不重复值；保留服务端顺序，不要求排序。 |
+| `strategy_capability_mismatch` | `{"missing_capabilities": ["file_change", "tool_call"]}` | 1–7 个不重复 Evidence 能力，按 file_change、tool_call、command_result、test_result、state_transition、artifact_snapshot、agent_response_claim 的规范顺序排列。 |
+
+例如遇到 `unsupported_difficulty`，可显示经过校验的
+`exc.details.get("supported_difficulties", [])`，让调用方选择支持的值。
+兼容旧服务省略难度/能力详情，此时返回 `{}`；若提供了畸形、空列表、未知键、
+越界或错误顺序的详情，则抛 `ProviderError(code="invalid_response")`。
+异步响应校验失败不会清除待恢复状态。Case 步数上限的既有合同不变。
+
+`invalid_request` 还允许可选的 `details.fields`：1–16 条封闭记录，必填
+`field` 和 `reason`。字段限于[公开错误诊断](public-error-diagnostics.zh-CN.md)
+列出的静态公开 serializer 路径，不是用户提交值。reason 限 required、invalid_type、
+blank、min_value、max_value、max_length、invalid_choice、invalid。可选
+expected_type、minimum、maximum、allowed_values 必须与字段的冻结约束一致。
+SDK 将这些安全约束显示为中文改正提示。
+
+`model_invalid_result`（以及历史 `model_invalid_response`）只接受可选的
+`{"reason": "invalid_structure"}`，reason 限 invalid_structure、invalid_type、
+out_of_bounds、invalid_format。提示明确是**服务生成的结果不合格**，不要求用户修改输入。
+历史缺少 details 时仍为空，不猜造具体原因。
+仅这两个模型错误码和 invalid_request 也将历史精确空对象 `details: {}` 视为省略；
+null、列表、非空未知详情仍然非法。
+
+其它 HTTP 详情仍丢弃，未知异步详情结构仍拒绝。不展示任意远端 message、私有路径
+或模型原文。详情不改变 retryable、待恢复身份、计费或自动重试规则。
+参见[公开错误诊断指南](public-error-diagnostics.zh-CN.md)。

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
 from ._json_values import detach_json
@@ -29,6 +30,8 @@ from .evidence.tracking.evidence import EvidenceCollector, PreparedEvidence
 from .providers.base import JudgeContext, JudgeProvider
 from .providers.normalization import normalize_report
 from .providers.official_judge import OfficialJudgeProvider
+from .repository.case_artifact_io import save_case_artifact
+from .repository.case_artifacts import artifact_from_case
 from .runtime import RuntimeSession
 
 RunState = Literal[
@@ -284,6 +287,41 @@ class Run:
         self._mutex = threading.RLock()
 
     @property
+    def case_origin(self) -> Literal["official", "custom"]:
+        """Return the explicit Case origin, not a guess based on its identifier."""
+        return "official" if "official_case" in self._case.extensions else "custom"
+
+    def save_case(self, path: str | os.PathLike[str]) -> Path:
+        """Save the complete reusable public Case without execution data.
+
+        Args:
+            path: Explicit destination within this Run's repo_path. Relative
+                paths resolve from that repository. Parent must exist; an
+                existing file is never overwritten, including concurrent saves.
+        Returns:
+            Absolute Path to the new UTF-8 kuma.case_artifact.v1 document.
+        Raises:
+            ValidationError: Malformed/changed official content or artifact limits.
+            SensitiveDataError: Private or sensitive content, without overrides.
+            ConfigurationError: Unsafe path, existing target, or file I/O failure.
+        Preconditions:
+            This Run owns a complete Case; official Cases retain the raw original.
+        Postconditions:
+            State/history/input position are unchanged. No Run ID, Evidence,
+            Agent output, rubric or credentials are exported. Checksums are not
+            authenticity proofs; official Judge still checks the server original.
+        Side Effects:
+            Atomically writes one bounded file, without network or tool execution.
+        Security/Privacy:
+            The complete file is limited to 5 MiB; links and mount escapes are
+            rejected. allow_sensitive never bypasses artifact privacy checks.
+        """
+        with self._mutex:
+            artifact = artifact_from_case(self._case)
+            root = self._runtime.workspace.repo_path
+            return save_case_artifact(root, path, artifact)
+
+    @property
     def state(self) -> RunState:
         """Return the current synchronous state-machine state."""
 
@@ -303,6 +341,35 @@ class Run:
 
         with self._mutex:
             return self._report
+
+    @property
+    def executed_strategy_group(self) -> Mapping[str, str] | None:
+        """Inspect the public Group coordinate reported by actual execution.
+
+        Returns:
+            Detached read-only mapping with schema_version, strategy_group_id,
+            strategy_group_version and catalog_release; None when the server
+            omitted it or the Run is custom/local. None means unconfirmed,
+            not General. No private strategy member or request source is exposed.
+
+        Preconditions:
+            Official Case provenance has passed Provider validation at creation.
+
+        Postconditions:
+            Mutating the returned value cannot change the Case. This reports
+            server-supplied execution metadata, never a substituted request
+            coordinate; it does not guarantee the quality of generated tests.
+            This metadata is not independent cryptographic proof, is outside the
+            existing raw Case signature, and is not added to Judge wire.
+
+        Side Effects:
+            None; reads immutable local Case metadata without network or disk.
+        """
+        official = self._case.extensions.get("official_case")
+        if not isinstance(official, Mapping):
+            return None
+        executed = official.get("executed_strategy_group")
+        return None if executed is None else MappingProxyType(dict(executed))
 
     @property
     def runtime_warnings(self) -> tuple[str, ...]:
@@ -639,6 +706,8 @@ class Run:
             InputProtocolError: If the Run is not completed and ready for Judge.
             ProviderError: If no Judge is configured or a custom Judge fails.
             KumaError: If an official Judge operation fails or times out.
+            BaseException: Cancellation, KeyboardInterrupt, and SystemExit are
+                propagated unchanged after restoring the retryable Run state.
 
         Preconditions:
             Every delivered input has a committed Submission, state is
@@ -648,6 +717,8 @@ class Run:
             Success stores the report and changes state to ``report_ready``.
             Failure restores ``completed`` so retry reuses the same immutable
             history, idempotency identity, and pending operation.
+            Interruptions do not create a report or cancel the remote operation;
+            call ``judge()`` again to resume an already-started official task.
 
         Side Effects:
             Calls the configured Judge for an unresolved report. Official Judge
@@ -678,6 +749,8 @@ class Run:
                 normalization error unchanged.
             ProviderError: Maps an unexpected non-KUMA exception to a safe
                 ``provider_failed`` error attributed to the actual Provider kind.
+            BaseException: Non-Exception interruptions propagate unchanged;
+                they are not converted into Provider errors or swallowed.
 
         Preconditions:
             The caller holds ``_mutex`` and committed history is immutable while
@@ -686,7 +759,8 @@ class Run:
         Postconditions:
             Success caches one report and sets ``report_ready``. Every Provider
             failure restores ``completed`` so the same history can be retried;
-            no report is fabricated.
+            no report is fabricated. Cancellation and process-control exceptions
+            restore the same state without clearing pending operation identity.
 
         Side Effects:
             Invokes the configured Judge. The official implementation may use
@@ -708,7 +782,6 @@ class Run:
             )
         if self._judge_provider is None:
             raise ProviderError("No Judge Provider is configured")
-        self._state = "judging"
         context = JudgeContext(
             case=self._case,
             history=tuple(self._history),
@@ -720,7 +793,11 @@ class Run:
                     item.submission.dropped_count for item in self._history
                 ),
             },
+            upload_diff=(
+                self._evidence.upload_diff if self._evidence is not None else False
+            ),
         )
+        self._state = "judging"
         try:
             raw_report = self._judge_provider.judge(context)
             report = normalize_report(raw_report, run_id=self.run_id)
@@ -730,6 +807,9 @@ class Run:
         except Exception as exc:
             self._state = "completed"
             raise _unexpected_judge_failure(self._judge_provider) from exc
+        except BaseException:
+            self._state = "completed"
+            raise
         self._report = report
         self._state = "report_ready"
         return report

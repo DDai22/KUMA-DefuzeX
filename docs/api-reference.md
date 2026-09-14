@@ -6,6 +6,30 @@ This page documents the stable user-facing Python entry points. Types, defaults,
 ranges, side effects, and failure behavior match the current implementation.
 KUMA uses keyword-only arguments for its main APIs so call sites remain readable.
 
+## `check_for_updates`
+
+```python
+from kuma import check_for_updates
+
+update = check_for_updates()
+print(update["status"], update["latest_version"], update["release_url"])
+```
+
+No parameters. Returns a detached dict: `status` is `disabled`, `checking`,
+`unavailable`, `up_to_date`, `optional` (new patch) or `required` (new major/minor);
+`current_version` is the local string, `latest_version` and `release_url` are
+validated official-release values or `None`, and `cached` is boolean. Required
+is a strong reminder, never a blocked request or automatic installation.
+
+Explicit calls can perform one anonymous GitHub HTTPS request (one-second socket
+timeout, 64 KiB cap, no retry); ordinary failure returns unavailable. Concurrent
+checks return checking without waiting. Success/failure is cached in memory for
+24 hours per process. Set `KUMA_DISABLE_UPDATE_CHECK=1` to disable even explicit
+calls. No credentials, Agent data, disk writes, proxies or redirects. Official
+transport schedules the same checker on a daemon thread; import/help/local/custom
+paths do not check. CLI equivalent: `kuma updates check`, JSON stdout, exit zero.
+See [release policy](releases.md) for all status fields and lifecycle limits.
+
 ## `configure`
 
 ```python
@@ -56,6 +80,7 @@ run = create_run(
 | --- | --- | --- | --- |
 | `repo_path` | `str \| os.PathLike[str]` | `"."` | Chooses the repository being tested. KUMA reads bounded metadata and, when enabled, observes file changes below this directory. Use `"."` when your Python process already runs at the repository root. |
 | `agent_profile_path` | `str \| os.PathLike[str] \| None` | `None` | Points to the UTF-8 file that describes the Agent, its production scenario, expected behavior, and prohibited boundaries. Supply it for official Case generation. The selected Strategy Group still controls the testing capability/domain/method; profile prose cannot select or override that group. Front matter may contain a closed `strategy_group` coordinate and a relative `tool_capabilities` file; both are validated before Provider I/O. Omit the path only when your custom Case Provider does not need an Agent Profile. |
+| `case_path` | `str \| os.PathLike[str] \| None` | `None` | Loads a complete saved `kuma.case_artifact.v1` instead of generating a Case. Relative paths use `repo_path`, not cwd. Cannot combine with `case_provider`, `agent_profile_path`, or non-`auto` strategy. Loading validates at most 5 MiB before credentials/runtime setup and makes no CaseGen/catalog call; `max_steps=None` uses the saved count, a smaller explicit limit fails without truncation. Official Judge still needs credentials and validates the server original. |
 | `case_provider` | `CaseProvider \| callable \| None` | `None` | Chooses who creates the test Inputs. Leave `None` to request an official Case from KUMA; pass a callable when your application supplies its own local Case. |
 | `judge_provider` | `JudgeProvider \| callable \| None` | `None` | Chooses who evaluates all submitted results and builds the final report. Leave `None` for the official Judge, or pass a callable for your own local evaluation. Ignored when `judge=False`. |
 | `strategy` | `str` | `"auto"` | Preserves compatibility with services that use an unversioned strategy ID. For current Strategy Groups, put the exact `id` and `version` in Agent Profile front matter. Combining a structured declaration with a non-default legacy value fails instead of creating ambiguous intent. |
@@ -64,7 +89,7 @@ run = create_run(
 | `on_failure` | `str` | `"continue"` | Decides what happens after you submit a step as `failed`, `timeout`, or `aborted`. `"continue"` delivers the next Input; `"stop"` ends the Run immediately. |
 | `allow_local` | `bool` | `False` | Allows the Run to start outside Docker for trusted local development. It only bypasses the Docker safety prerequisite: it does not sandbox the Agent, expand file access, or weaken validation and privacy checks. |
 | `track_files` | `bool` | `True` | Tells KUMA to compare repository file metadata before and after each Input so the Judge can see which files were created, modified, deleted, or renamed. Set `False` when file changes are irrelevant or unavailable. |
-| `upload_diff` | `bool` | `False` | Adds bounded changed text to file Evidence instead of sending only paths, hashes, sizes, and change types. Enable only when the Judge needs the actual diff and the repository text is safe to disclose; requires `track_files=True`. |
+| `upload_diff` | `bool` | `False` | Sends safe unified patches through negotiated `file_diff`; requires `track_files=True`. Default False keeps hashes. Unsupported servers fail before Judge POST; oversized/binary/sensitive patches are omitted whole with a reason, never truncated. See [limits](runtime-evidence.md). |
 | `save_local` | `bool` | `False` | Writes a local JSON copy of each committed Submission under `.kuma/runs/<run_id>/`. Use it for debugging or audit records. It does not replace submission to an official Judge. |
 | `allow_sensitive` | `bool` | `False` | Lets ordinary Evidence continue when KUMA's scanner flags content as potentially sensitive. Leave `False` unless you reviewed that content and intend to disclose it; this never allows secrets into OTel Trace Evidence. |
 | `timeout` | `float` | `300.0` seconds | Limits one HTTP connection attempt to the public KUMA service. Lower it to fail individual network calls sooner. It does not limit the total time spent waiting for Case generation or Judge completion. |
@@ -72,7 +97,7 @@ run = create_run(
 | `max_retries` | `int` | `2` | Sets how many additional attempts KUMA may make after a transient HTTP failure; accepted values are 0–5. Retries reuse the same idempotency key and do not intentionally create another Case or Judge operation. |
 | `api_key` | `str \| None` | `None` | Supplies the official-service credential for this Run only. Use it to override the environment or saved credential. With `None`, KUMA checks `KUMA_API_KEY` and then the user credential file. Fully local Provider combinations need no key. |
 | `trace_evidence` | `TraceEvidenceCapture \| None` | `None` | Supplies a specific in-process OTel capture and its limits for this Run. Pass the object returned by `configure_trace_evidence()` when you need explicit control. With `None`, KUMA safely reuses a compatible global Provider when available; otherwise the Run continues without Trace Evidence and records a warning. |
-| `scan_strategy_group` | `bool` | `False` | Explicitly enables conservative local Strategy Group suggestion for an official Case. KUMA compares only closed declared and intrinsic Runtime Evidence capabilities; it never executes tools or guesses from names, descriptions, schemas, resources, access, or side effects. A unique reliable match is selected; ties and no-match results use the catalog's exact default. An explicit Agent Profile selection always has priority. |
+| `scan_strategy_group` | `bool` | `False` | Disabled automatic matching flag: keep `False`. `True` raises `ConfigurationError(config_invalid)` before file or network I/O, including with an explicit group or custom provider. Privacy scanning and Evidence capability validation remain enabled. |
 
 <!-- api-parameters:create_run:end -->
 
@@ -132,6 +157,32 @@ content uses `agent_profile_invalid`. The returned `strategy_group` is an exact
 coordinate declaration—not an inference from Profile prose.
 
 ## `Run`
+
+### `save_case`
+
+<!-- api-parameters:save_case:start -->
+
+| Argument | Type | Required/default | What it does and when to use it |
+| --- | --- | --- | --- |
+| `path` | `str \| os.PathLike[str]` | Required | Destination within this Run's repository; relative paths are repository-relative. Its parent must already exist. Choose a new filename: existing files, symlinks, mount escapes and concurrent overwrites are rejected. |
+
+<!-- api-parameters:save_case:end -->
+
+**Returns:** absolute `Path` to the complete UTF-8 Case artifact (maximum
+5,242,880 bytes). **Preconditions:** the Run has a validated complete Case;
+official Cases must retain their original public record. **Postconditions:**
+Run state, history and Input position do not change; no runtime ID, Evidence,
+Agent output, Rubric or credential is saved. **Raises:**
+`ValidationError(case_artifact_invalid)` for invalid/changed content,
+`ValidationError(case_origin_invalid)` for conflicting origin,
+`SensitiveDataError` for sensitive/private content, and `ConfigurationError`
+for unsafe/unwritable/existing paths. **Side effects:** bounded atomic file
+publication, no network. Privacy checks cannot be disabled. Public checksums
+detect corruption, not authenticity; official Judge validates the tenant-owned
+server original. [Save/load example and wire boundaries](case-files.md).
+
+`run.case_origin` is read-only `"official" | "custom"`; it describes the Case,
+not which Judge is configured. An official Judge does not make a custom Case official.
 
 ### `get_input`
 
@@ -194,6 +245,17 @@ credentials, raw tracebacks, prompts, or unapproved file contents.
 
 ### `judge`
 
+The Backend advertises `max_files` as twice the supported maximum Case step
+count (currently 10 × 2 = 20), not twice this Run's actual steps. The Case file
+and every Evidence file each consume a slot. Batch Judge applies that count
+independently to each item, not the batch sum; the SDK never hardcodes 20.
+File-count rejection happens before Judge POST. Existing byte and privacy
+checks remain: the Backend enforces combined Case+Evidence bytes for every
+item, including custom Cases; the SDK preserves its existing per-path byte
+checks and conservative aggregate batch cap. This update does not add a new
+combined-byte preflight for custom single Judge uploads. Deploy the matching
+Backend first; clients continue to respect an older Backend's smaller limit.
+
 <!-- api-parameters:judge:start -->
 
 | Argument | Type | Required/default | What it does and when to use it |
@@ -241,6 +303,7 @@ removes validated temporary runtime files but does not submit or invoke Judge.
 | `case_id` | `str` | Identifies the public Case being executed. It is safe to correlate but never exposes the private Rubric. |
 | `max_steps` | `int` | Reports how many steps the generated Case actually contains. It is at least 1 and never exceeds the explicit `create_run(max_steps=...)` limit, or the service/default limit when that argument was `None`. |
 | `state` | `RunState` | Shows which operation is currently legal, such as delivering an Input, submitting, judging, completed, or cancelled. |
+| `executed_strategy_group` | `Mapping[str, str] \| None` | Detached read-only server-reported execution metadata: schema_version, strategy_group_id (1–80 characters), strategy_group_version (1–32), catalog_release (64 lowercase hex). Historical omission/custom Run returns None, never a request/default substitute. Reading performs no I/O. Submitted coordinates are checked before success; invalid data raises invalid_response during creation/recovery. Not an independent cryptographic proof or part of the raw Case signature/Judge wire. |
 | `history` | `tuple[HistoryItem, ...]` | Contains every successfully committed Input and its matching Submission in execution order. It does not include an in-progress step. |
 | `report` | `TestReport \| None` | Holds the final Judge result after state becomes `report_ready`; it stays `None` before Judgment or when `judge=False`. |
 | `runtime_warnings` | `tuple[str, ...]` | Lists stable warning codes for non-fatal Evidence gaps, such as unavailable automatic Trace capture. The Run can still complete. |
@@ -386,7 +449,7 @@ excluded.
 | `max_spans` | positive `int` | `200` | Retains at most this many ended spans per step using deterministic sampling; dropped spans are counted. This per-step cap is independent of the Run-wide byte budget. |
 | `max_attributes` | positive `int` | `32` | Keeps at most this many safe, allowlisted attributes on each span; additional attributes are dropped and counted. Sensitive attributes remain rejected regardless of this number. |
 | `max_events_per_span` | positive `int` | `20` | Keeps at most this many safe OTel events on each span; later events are dropped and reported. |
-| `max_text_length` | positive `int` | `256` characters | Truncates each retained allowlisted text value to this many Unicode characters and records that truncation occurred. |
+| `max_text_length` | positive `int` | `256` characters | Bounds retained metadata text. Tool argument/result bodies use a separate 4 MiB canonical JSON limit and are never truncated; see [Runtime Trace](runtime-trace.md). |
 | `max_total_bytes` | positive `int` | `8388608` bytes (8 MiB) | Caps the compact JSON size of all committed Trace envelopes in one Run. KUMA deterministically drops excess Trace data and reports the loss; the value must still fit the smallest valid envelope. |
 | `max_log_records` | positive `int` | `200` | Keeps at most this many normalized OTel log records per step; excess records are dropped and reported. |
 | `max_log_bytes` | positive `int` | `128000` bytes | Caps structured OTel log artifacts committed across one Run; raw log bodies are not retained. |
@@ -423,3 +486,52 @@ Catch `KumaError` for normal SDK failures. `str(exc)` is a safe user-facing
 message. Program logic should use `exc.code`, `exc.retryable`, and
 `exc.request_id`; `exc.details` is a bounded public mapping and should be logged
 only through an application-approved allowlist.
+
+`request_id: str | None` carries an actual `X-Request-ID` response header only
+when it matches 32 lowercase hexadecimal characters. Missing, malformed, or
+duplicate headers yield `None`; the SDK never generates a replacement or reads
+IDs from the JSON body. For async terminal failures it identifies that poll
+response, not the operation/start request. The separate `kreq_…`
+`client_request_id` remains the local recovery identity. A valid header can be
+server-echoed rather than server-generated; it is not an authentication token.
+
+The same ID is retained for decode/size/status failures and rejected operation
+start/poll/result schemas, using only the response being validated. No-response
+network failures and local persistence errors are not assigned a prior ID.
+
+Remote error details use exact per-code schemas (HTTP failures and async failed
+operations share validation):
+
+| `exc.code` | Allowed `exc.details` | Validation |
+| --- | --- | --- |
+| `case_step_limit_exceeded` | `{"max_allowed_steps": 10}` | Required non-boolean integer, 1–10. |
+| `unsupported_difficulty` | `{"supported_difficulties": ["D0", "D2"]}` | 1–5 unique values from D0–D4; server order is preserved, not required to be sorted. |
+| `strategy_capability_mismatch` | `{"missing_capabilities": ["file_change", "tool_call"]}` | 1–7 unique Evidence capabilities in canonical order: file_change, tool_call, command_result, test_result, state_transition, artifact_snapshot, agent_response_claim. |
+
+For example, on `unsupported_difficulty`, show the validated
+`exc.details.get("supported_difficulties", [])` so the caller can choose a
+supported value. Historical omission of difficulty/capability details yields
+`{}`. Present malformed, empty, unknown-key or out-of-range details for these
+codes raise `ProviderError(code="invalid_response")`; an invalid async response
+does not clear pending recovery state. The Case-limit contract is unchanged.
+
+`invalid_request` additionally accepts optional `details.fields`: 1–16 closed
+records with required `field` and `reason`. Fields are the static public serializer
+paths listed in [public error diagnostics](public-error-diagnostics.md), not
+submitted values. Reasons are required, invalid_type, blank, min_value, max_value,
+max_length, invalid_choice, or invalid. Optional expected_type, minimum, maximum,
+and allowed_values must match the frozen per-field constraints. The SDK includes
+these safe constraints in its Chinese correction message.
+
+`model_invalid_result` (and historical `model_invalid_response`) accepts only
+optional `{"reason": "invalid_structure"}` with reason from invalid_structure,
+invalid_type, out_of_bounds, or invalid_format. Its message explicitly describes
+a **service-generated result failure**, not a request to fix user input. Missing
+details stay empty: historical failures do not acquire guessed explanations.
+Only these two model codes and invalid_request also accept the legacy exact empty
+object `details: {}` as absence; null/lists/unknown nonempty details remain invalid.
+
+Other HTTP details remain discarded; unknown async detail shapes remain rejected.
+Remote free-form messages, private paths and raw model responses are never shown.
+Details do not change retryability, pending identity, billing or automatic retry
+policy. See the [public error diagnostics guide](public-error-diagnostics.md).

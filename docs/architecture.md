@@ -1,5 +1,11 @@
 # SDK v4 架构
 
+Case 文件层 `repository/case_artifacts.py` 统一校验保存、加载与官方 Judge
+上传的同一公共原件。`case_artifact_io.py` 仅负责有界读取及固定父目录下的原子
+不覆盖发布；`create_run(case_path=...)` 在鉴权/运行材料初始化前加载，复用
+正常 Input 规范化并绑定新 Run ID。来源与 Rubric 不猜测：SDK checksum 不证明
+发行身份，Backend/Core 保留租户原件/原 Rubric 的权威核验职责。
+
 本文描述当前 `kuma` Python 包的模块边界、同步用户 API、内部 v2 operation 流程和关键不变量。公开 HTTP 字段与路径另见 [API Contract](api-contract.md)；使用方式见 [README](../README.md)。
 
 ## 系统边界与数据归属
@@ -274,15 +280,23 @@ span 在 start 时绑定到 capture 当前唯一 active step，因此同进程�
 
 `_otel_log_mapping.py` 将同一 active step 内的原生 LogRecord 映射到一个版本化 JSON log segment。它只保留时间、severity、trace/span 关联、安全 resource/scope、正文/event hash 和 attribute 计数；原始 body、event name 与普通 attribute 值不会进入内存中的 Evidence payload。segment 复用既有 `Submission.logs` wire，并在 `runtime_evidence` 中投影为 hash-only `artifact_snapshot`，不新增 Core component 类型。record 数与每 Run 完整 JSON 字节均有独立硬上限；prepare/commit/abort 与 span Evidence 共用事务生命周期。
 
-成功的公共 wire extension 是：
+当前协商的公共 wire extension 是：
 
 ```text
 Submission.extensions["trace_evidence"]
-  -> Official Judge history[].submission.trace_evidence
-  -> defuzex.trace_evidence.v1
+  -> Official Judge named Runtime Evidence artifact_snapshot
+  -> trace_evidence + capture_status + capture_summary
 ```
 
-这是向后兼容的 Evidence 扩展，不是新的 transport 或服务协议。SDK 不实现 OTLP receiver、跨进程关联、Trace 查询、UI 或服务端存储。
+inner Trace 仍为 `defuzex.trace_evidence.v1`；outer named schema 以 `runtime_trace`
+显式协商，既有 MIME 不变。不支持时在 Judge POST 前失败，不通过历史 raw_log 降级。
+实际 `execute_tool` 的工具名/调用ID/参数/结果是受控新增 allowlist；参数/结果采用
+独立 4 MiB JSON 上限和强制敏感扫描，不使用普通 metadata 的256字符截断。
+SDK 不实现 OTLP receiver、跨进程关联、Trace 查询、UI 或服务端存储。
+
+独立 `file_diff` 能力仅在 `upload_diff=True` 时加入：复用已有快照/diff，严格校验
+unified格式、相对路径、哈希和32KiB/64KiB预算；不截断、不上传整文件。敏感补丁
+在history/本地保存前移除正文，仅保留hash和omission reason。默认仍为hash-only。
 
 ## 不属于 SDK 的职责
 

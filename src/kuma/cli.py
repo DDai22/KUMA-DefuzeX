@@ -9,19 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from .client import DEFAULT_BASE_URL, KumaClient
+from .config import _validate_strategy_scan
 from .exceptions import KumaError
 from .local_quickstart import run_local_quickstart
-from .repository.strategy_groups import (
-    available_evidence_capabilities,
-    load_strategy_group_catalog,
-    resolve_strategy_group,
-)
 from .repository.tool_capability_io import (
     load_agent_capabilities,
     save_agent_capabilities,
     scan_agent_tool_manifest,
 )
 from .requests import list_requests, resume_request, show_request
+from .updates import check_for_updates
 
 
 def _emit(data: Any) -> None:
@@ -128,18 +125,16 @@ def cmd_strategies_list(args: argparse.Namespace) -> int:
 
 
 def cmd_strategies_suggest(args: argparse.Namespace) -> int:
-    """Suggest one group offline from an explicit catalog and capability file."""
-    catalog = load_strategy_group_catalog(args.catalog)
-    capabilities = load_agent_capabilities(args.capabilities)
-    available = available_evidence_capabilities(capabilities, ())
-    resolved = resolve_strategy_group(
-        catalog,
-        explicit=None,
-        scan=True,
-        available_capabilities=available,
-    )
-    _emit_or_save(resolved.to_declaration(), args.output)
-    return 0
+    """Reject disabled matching without reading catalog/capability files.
+
+    Args:
+        args: Parsed legacy suggestion arguments; paths and output are ignored.
+
+    Raises:
+        ConfigurationError: Always ``config_invalid``; the CLI prints the safe
+            disabled message and exits nonzero. No files or network are accessed.
+    """
+    _validate_strategy_scan(True)
 
 
 def cmd_requests_list(args: argparse.Namespace) -> int:
@@ -168,10 +163,38 @@ def cmd_requests_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_updates_check(args: argparse.Namespace) -> int:
+    """Print a safe update-status JSON object; offline/disabled checks exit zero.
+
+    Args:
+        args: Parsed no-option updates check command; no credentials are read.
+
+    Returns:
+        Zero, including required reminders, unavailable or disabled results.
+
+    Side Effects:
+        Calls the bounded explicit GitHub check and emits its detached result to
+        stdout. Never installs software or calls Backend/Agent/model services.
+    """
+    _emit(check_for_updates())
+    return 0
+
+
+def _add_update_parser(subparsers: Any) -> None:
+    """Register the explicit update command without scheduling checks or I/O."""
+    updates = subparsers.add_parser("updates", help="check official GitHub releases")
+    update_commands = updates.add_subparsers(dest="updates_command", required=True)
+    update_check = update_commands.add_parser(
+        "check", help="report update status; never install"
+    )
+    update_check.set_defaults(func=cmd_updates_check)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the public CLI parser without performing I/O."""
     parser = argparse.ArgumentParser(prog="kuma")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_update_parser(subparsers)
     whoami = subparsers.add_parser(
         "whoami", help="validate KUMA_API_KEY and show entitlements"
     )
@@ -212,7 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.set_defaults(func=cmd_tools_validate)
     strategies = subparsers.add_parser(
         "strategies",
-        help="list public Strategy Groups or suggest one from local capabilities",
+        help="list public Strategy Groups (automatic suggestion is disabled)",
     )
     strategy_commands = strategies.add_subparsers(
         dest="strategies_command", required=True
@@ -225,15 +248,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_command.add_argument("--output", help="optional JSON destination")
     list_command.set_defaults(func=cmd_strategies_list)
     suggest = strategy_commands.add_parser(
-        "suggest", help="suggest a group locally without network or tool execution"
+        "suggest", help="disabled: use the catalog default or an explicit group"
     )
-    suggest.add_argument("--catalog", required=True, help="local catalog JSON")
-    suggest.add_argument(
-        "--capabilities", required=True, help="local Agent capability JSON"
-    )
-    suggest.add_argument(
-        "--output", help="optional Agent Profile-ready JSON destination"
-    )
+    suggest.add_argument("--catalog", help="unused: matching is disabled")
+    suggest.add_argument("--capabilities", help="unused: matching is disabled")
+    suggest.add_argument("--output", help="unused: matching is disabled")
     suggest.set_defaults(func=cmd_strategies_suggest)
     requests = subparsers.add_parser(
         "requests", help="inspect or resume official asynchronous requests"
