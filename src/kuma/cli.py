@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,27 @@ def _emit(data: Any) -> None:
 
 
 def _emit_or_save(data: Any, output: str | None) -> None:
-    """Print JSON or atomically save it to an explicitly selected local path."""
+    """Print CLI JSON or atomically replace an explicitly selected output file.
+
+    Args:
+        data: JSON-serializable CLI result; serialization is completed before I/O.
+        output: Destination path, or None to print to stdout instead.
+
+    Returns:
+        None after writing the complete JSON document.
+
+    Raises:
+        KumaError: A save fails, using stable ``strategy_scan_invalid`` text.
+            A secondary cleanup OSError never masks this original safe failure.
+
+    Side Effects:
+        CLI commands create a temporary file beside the destination, flush it,
+        and atomically replace the destination. On failure cleanup is best-effort;
+        an OS-denied unlink may leave a temporary file. User interrupts propagate.
+
+    Security/Privacy:
+        OS paths and raw cleanup errors are not included in the public message.
+    """
     if output is None:
         _emit(data)
         return
@@ -54,7 +75,8 @@ def _emit_or_save(data: Any, output: str | None) -> None:
         os.replace(temporary, destination)
     except OSError:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
         raise KumaError(
             "Strategy Group output could not be saved",
             code="strategy_scan_invalid",
