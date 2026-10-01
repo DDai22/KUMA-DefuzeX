@@ -41,6 +41,43 @@ Repository contributors should install this checkout with `python -m pip install
 Observation and correlation APIs are available in KUMA 0.3.0 or later.
 Upgrade the published package using the command above; no source checkout is required.
 
+### Configuration compatibility and container upgrades
+
+Official Case + Judge runs validate the public Judge configuration during
+`create_run`, before creating runtime state or submitting paid Case generation.
+Judge submission reads current limits again; an early check cannot guarantee that
+the server configuration will remain unchanged during Agent execution. Custom
+providers, loaded Case workflows, and Judge-disabled runs retain their existing
+validation order. Resuming a known Judge operation still polls that operation;
+it does not start another job or require a fresh discovery request.
+
+Unknown optional Runtime Evidence capability names in a bounded, valid discovery
+list are ignored, never copied into uploaded Evidence. Malformed configuration,
+invalid known-capability order/dependencies, and explicitly requested unsupported
+features still fail closed. Actual Evidence schemas remain strict. No generic
+required-version policy or automatic SDK installation is implemented; an optional
+server capability alone is not a mandatory-upgrade signal.
+
+If an application pins `kuma-defuzex==0.3.1`, upgrading the host does not upgrade
+its Docker image, virtual environment, or running Python process. Update the pin
+to the intended published version (for example `kuma-defuzex==0.3.2`), rebuild the
+image, recreate the container, and restart long-lived workers/notebook kernels.
+Verify **inside the environment that runs the Agent**:
+
+```bash
+python -c "from importlib.metadata import version; import kuma; print(version('kuma-defuzex')); print(kuma.__file__)"
+```
+
+For Docker Compose, use your application's service name:
+
+```bash
+docker compose build --no-cache <agent-service>
+docker compose up -d --force-recreate <agent-service>
+```
+
+Installing or rebuilding does not replay a Case or Judge request. Resume an
+existing recorded operation instead of rerunning an entire paid workflow.
+
 ## Local quickstart
 
 To save and execute the same complete Case in another process, use
@@ -62,6 +99,42 @@ python examples/minimal_local.py
 ```
 
 ## Configuration
+
+### Official Case difficulty
+
+```python
+from kuma import create_run
+
+run = create_run(
+    repo_path="/workspace/repo",
+    agent_profile_path="/workspace/repo/agent-profile.md",
+    difficulty="D2",
+)
+```
+
+In an authenticated official workflow, `difficulty` requests both problem count
+and challenge intensity: `"D0"` injects zero problems; `"D1"` (default) injects
+one obvious, low-intensity problem; `"D2"` injects two subtler or composed problems
+that require stronger recognition, recovery and verification. For example, D1
+may present one clearly signaled recoverable obstacle, while D2 may combine two
+less obvious obstacles that require checking the recovery result.
+It does not select a Strategy Group or change Judge severity. `max_steps` remains
+the same upper bound: D2 does not request an extra step. Necessary inputs and
+solvability must be preserved; difficulty is not a measured failure-rate promise.
+Only these exact strings are valid; `None`, lowercase strings and other values
+raise `ConfigurationError(code="config_invalid")` before filesystem/network work.
+The SDK forwards the choice; Core implements injection, and the SDK does not
+claim that generated content has been independently verified.
+
+Direct provider users can set
+`OfficialCaseProvider(client, difficulty="D2").generate_case(context)`.
+Both this synchronous Python call and `create_run` use the same asynchronous
+Backend operation and polling path. Omitted or explicit D1 preserves the previous
+request bytes; D0/D2 change the request hash. Retry with the same level preserves
+pending-operation identity and uses GET-only polling once an operation is known.
+Custom providers, local observation and loaded Case content are unchanged.
+Non-default levels require a service supporting the difficulty field; unsupported
+requests are not silently retried at D1.
 
 ### API key
 

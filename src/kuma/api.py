@@ -310,6 +310,8 @@ def _adapted_providers(
     explicit official ``max_steps`` also requires that public read before a new
     Case operation; the provider reuses the same response when both apply.
     Private service configuration never enters the SDK.
+    With official Case and Judge, Judge configuration is validated before runtime
+    creation and Case generation. Custom-provider flows keep their existing order.
 
     Args:
         config: Validated options controlling Judge, privacy, timeout, retry, and
@@ -393,6 +395,7 @@ def _adapted_providers(
             allow_sensitive=config.allow_sensitive,
             operation_wait_timeout=config.operation_wait_timeout,
             max_steps=config.max_steps,
+            difficulty=config.difficulty,
         )
         if entitlements is not None:
             official_case_provider._configure_entitlements(entitlements)
@@ -409,6 +412,8 @@ def _adapted_providers(
             operation_wait_timeout=config.operation_wait_timeout,
             state_root=repo_path,
         )
+        if official_case:
+            adapted_judge._load_upload_config()
     else:
         adapted_judge = adapt_judge_provider(judge_provider)
     return (
@@ -539,6 +544,7 @@ def create_run(
     judge_provider: Any = None,
     strategy: str = "auto",
     max_steps: int | None = None,
+    difficulty: str = "D1",
     judge: bool = True,
     on_failure: str = "continue",
     allow_local: bool = False,
@@ -604,6 +610,16 @@ def create_run(
             stable error details; the SDK never truncates a returned Case. Custom
             Case Providers require an explicit positive value. ``None`` uses the
             official service policy.
+        difficulty: Official generation injection level: ``"D0"`` requests no
+            problems, ``"D1"`` (default) one, and ``"D2"`` two. This is not Judge
+            severity or a step count. Other values, including ``None``, fail
+            before I/O. D1 is omitted from the wire even when explicitly passed;
+            D0/D2 participate in request identity. Custom providers and saved
+            Cases are unchanged; the SDK does not generate or verify injections.
+            D1 is obvious and low-intensity; D2 is subtler or composed, requiring
+            stronger recognition, recovery and verification. Necessary inputs
+            and solvability must be preserved, with max_steps unchanged as an
+            upper bound. No measured failure rate is promised.
         judge: Whether to request a final Judgment after the last Submission.
         on_failure: ``"continue"`` advances after a non-completed Submission;
             ``"stop"`` closes the Run immediately.
@@ -679,6 +695,7 @@ def create_run(
         {
             "strategy": strategy,
             "max_steps": max_steps,
+            "difficulty": difficulty,
             "judge": judge,
             "on_failure": on_failure,
             "allow_local": allow_local,

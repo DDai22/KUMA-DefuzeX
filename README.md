@@ -56,6 +56,13 @@ Reason: Output exactly matched the published rule.
 This checks the bundled local example, not your Agent or the hosted Judge.
 To evaluate your Agent, follow the [SDK guide](docs/sdk-guide.md).
 
+For official Case generation, `create_run(..., difficulty="D1")` selects challenge
+count and intensity: D0 injects zero problems; D1 injects one obvious, low-intensity
+problem; D2 injects two subtler or composed problems requiring stronger recognition,
+recovery and verification. Necessary inputs and solvability must be preserved.
+`max_steps` remains the same upper bound; D2 does not add a step or change Judge
+severity. No measured failure rate is promised; the service builds the challenge.
+
 ## Next steps
 
 - [Run an official evaluation](docs/sdk-guide.md) with the full Case and Judge workflow.

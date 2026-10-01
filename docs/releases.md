@@ -6,6 +6,38 @@ main before receiving its own immutable version tag and GitHub Release. This doc
 not evidence that the candidate has shipped. Never move an existing tag or append
 new functionality to an old release as a substitute for a new version.
 
+## 0.3.3 release notes
+
+This optional patch improves compatibility with additive Judge configuration
+and adds an optional official Case difficulty selector with unchanged defaults.
+These candidate notes do not establish publication; check the matching GitHub
+Release and PyPI version before installing a pin.
+
+- Well-formed unknown optional Runtime Evidence capability names in discovery
+  are ignored and never copied into uploaded Evidence. Malformed configuration,
+  known capability dependencies/order and actual Evidence schemas remain strict.
+- Built-in Official Case + Judge runs check Judge configuration during
+  `create_run`, before runtime creation or paid Case generation. Judge submission
+  checks current limits again. Custom providers and loaded Case workflows retain
+  their existing validation order; known operation recovery remains GET-only.
+- Container upgrade guidance explains dependency pins, rebuilding/recreating
+  containers and restarting Python workers. A host-only install cannot update a
+  running container's SDK.
+- `create_run(..., difficulty="D1")` and
+  `OfficialCaseProvider(..., difficulty="D1")` select zero/one/two injected
+  problems using D0/D1/D2, with increasing challenge intensity: D1 is obvious
+  and low-intensity; D2 is subtler or composed, requiring stronger recognition,
+  recovery and verification. Necessary inputs and solvability must be preserved.
+  `max_steps` remains the same upper bound; D2 does not add a step or change Judge
+  severity. No measured failure rate is promised. Default or explicit D1 preserves
+  the previous wire and request identity; D0/D2 are sent to a supporting service.
+  Invalid values fail locally before I/O. Custom providers and loaded Cases are
+  unchanged; actual injection remains service-owned.
+
+No automatic installation or paid retry is introduced. This patch does not add a
+generic required-version policy or turn optional additions into forced upgrades.
+See [configuration compatibility and container upgrades](sdk-guide.md#configuration-compatibility-and-container-upgrades).
+
 ## 0.3.2 release notes
 
 This optional patch repairs Evidence handling, safe credential-example detection
