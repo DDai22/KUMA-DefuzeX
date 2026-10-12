@@ -30,13 +30,20 @@ from .errors import (
 )
 from .evidence.assessment_contract import build_assessment_evidence
 from .evidence.runtime import runtime_submission_id
-from .evidence.runtime_actors import invalid_runtime_actor, validate_runtime_actors
+from .evidence.runtime_actors import (
+    invalid_agent_output_actor,
+    invalid_runtime_actor,
+    validate_agent_output_actor,
+    validate_attributed_output,
+    validate_runtime_actors,
+)
 from .evidence.tracking.evidence import EvidenceCollector, PreparedEvidence
 from .providers.base import JudgeContext, JudgeProvider
 from .providers.normalization import normalize_report
 from .providers.official_judge import OfficialJudgeProvider
 from .repository.case_artifact_io import save_case_artifact
 from .repository.case_artifacts import artifact_from_case
+from .repository.privacy import enforce_sensitive_policy, scan_sensitive_json
 from .runtime import RuntimeSession
 from .serialization import to_json
 from .timeline import StageTimeline, elapsed_ms
@@ -523,6 +530,7 @@ class Run:
         external_invocation_id: str | None = None,
         public_messages: Mapping[str, Any] | None = None,
         runtime_actors: Sequence[Mapping[str, str]] | None = None,
+        agent_output_actor: str | None = None,
     ) -> TestReport | None:
         """Validate and commit one result, then advance or judge synchronously.
 
@@ -560,6 +568,14 @@ class Run:
                 coverage. Missing/ambiguous/duplicate selectors fail with
                 runtime_actor_invalid before submission commit. Upload binds
                 final hashes/pointers; unsupported projections fail before POST.
+            agent_output_actor: Optional existing actor enum (same values as
+                runtime_actors) for the observed final output, not its tool spans.
+                None leaves attribution unknown. Requires completed nonempty
+                output, public_messages (an honest empty bundle is allowed) and
+                Runtime Evidence capture. Explicit declarations are not proof of
+                truth or execution. Upload binds the final sanitized output leaf
+                and byte hash; invalid declarations fail before commit with
+                agent_output_actor_invalid. No transcript is synthesized.
 
         Returns:
             Final :class:`TestReport` only when this is the last input and Judge
@@ -594,11 +610,21 @@ class Run:
             Output, error, logs, diffs, and Evidence may cross the public Judge
             boundary. Do not pass credentials, raw tracebacks, prompts, private
             rubrics, or unauthorized repository content.
+            Default and explicitly supplied OfficialJudgeProvider scan output
+            before Evidence preparation/history commit, even with allow_sensitive.
+            Completed output is sanitized only after explicit redaction capability
+            negotiation, with partial capture recorded. Unsupported redaction or
+            residual secrets leave the same input available for corrected retry.
         """
 
         log_paths = _validate_log_paths(logs)
         invocation_id = external_identifier(external_invocation_id)
         actors = validate_runtime_actors(runtime_actors)
+        output_actor = validate_agent_output_actor(agent_output_actor)
+        if output_actor is not None and (
+            status != "completed" or public_messages is None or self._evidence is None
+        ):
+            raise invalid_agent_output_actor()
         if actors and (public_messages is None or self._evidence is None):
             raise invalid_runtime_actor()
         with self._mutex:
@@ -610,6 +636,21 @@ class Run:
                 status=status,
                 error=error,
             )
+            if output_actor is not None:
+                validate_attributed_output(plain_output)
+            if isinstance(self._judge_provider, OfficialJudgeProvider):
+                if status == "completed" and self._evidence is not None:
+                    plain_output, output_redacted = (
+                        self._judge_provider._prepare_agent_output(plain_output)
+                    )
+                else:
+                    enforce_sensitive_policy(
+                        scan_sensitive_json(plain_output, location="output"),
+                        allow_sensitive=False,
+                    )
+                    output_redacted = False
+            else:
+                output_redacted = False
             assessment = (
                 None
                 if public_messages is None
@@ -630,6 +671,8 @@ class Run:
                     logs=log_paths,
                     assessment_evidence=assessment,
                     runtime_actors=actors,
+                    output_redacted=output_redacted,
+                    agent_output_actor=output_actor,
                 )
             submission = self._submission(
                 current=current,
@@ -712,6 +755,8 @@ class Run:
         logs: Sequence[str] | None,
         assessment_evidence: Mapping[str, Any] | None = None,
         runtime_actors: Sequence[Mapping[str, str]] = (),
+        output_redacted: bool = False,
+        agent_output_actor: str | None = None,
     ) -> PreparedEvidence | None:
         """Stage Evidence and optional validated message bundle before commit.
 
@@ -720,6 +765,10 @@ class Run:
         omission leaves historical collector calls and custom tests unchanged.
         Local runtime_actors are resolved by the collector before persistence;
         failed resolution aborts capture without consuming the active input.
+        output_redacted records negotiated content loss before the collector
+        persists the single sanitized output used by history and Runtime hashes.
+        agent_output_actor is local-only validated attribution, persisted with
+        that same output; official upload later binds its exact safe wire leaf.
         """
         if self._evidence is None:
             return None
@@ -730,6 +779,10 @@ class Run:
         )
         if runtime_actors:
             extra["runtime_actors"] = runtime_actors
+        if output_redacted:
+            extra["output_redacted"] = True
+        if agent_output_actor is not None:
+            extra["agent_output_actor"] = agent_output_actor
         return self._evidence.prepare(
             input_id=current.input_id,
             output=output,

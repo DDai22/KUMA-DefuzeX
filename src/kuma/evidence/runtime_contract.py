@@ -547,21 +547,42 @@ def _validate_file_summary_field(value: Mapping[str, Any]) -> None:
 
 
 def _validate_trace_redaction(value: Mapping[str, Any], *, enabled: bool) -> None:
-    """Admit only the reused component-scoped Trace redaction extension.
+    """Bind existing redaction records to retained Trace, response or file facts.
 
-    Ordinary historical envelopes omit redactions entirely. Every annotation
-    must identify the actual trace artifact with a redacted tool body; unknown
-    fields or unsupported redaction kinds fail closed. This narrow extension
-    does not enable redaction for other Run content or change its privacy policy.
+    Ordinary historical envelopes omit redactions entirely. Annotation of
+    Trace loss remains mandatory. Response records identify completed hash-bound
+    sanitized output, not an inferred claim of completeness. File records cover
+    sensitive diff omissions when redaction is enabled. Unknown, duplicate or
+    mismatched records fail closed; this validator never reconstructs originals.
     """
     expected = []
+    records = value.get("redactions", [])
+    if not isinstance(records, list):
+        raise ValueError("runtime redaction records are invalid")
     for component in value["components"]:
         trace = component.get("trace_evidence")
-        if trace is not None and "trace_tool_content_redacted" in trace["reasons"]:
+        response_record = {
+            "component_id": component["component_id"],
+            "kind": "agent_response_claim",
+            "status": "redacted",
+            "reason": "sensitive_content",
+        }
+        response_loss = (
+            component["kind"] == "agent_response_claim"
+            and component["claim"] == "completed"
+            and response_record in records
+        )
+        if (
+            (trace is not None and "trace_tool_content_redacted" in trace["reasons"])
+            or response_loss
+            or (
+                enabled and component.get("diff_omission_reason") == "sensitive_content"
+            )
+        ):
             expected.append(
                 {
                     "component_id": component["component_id"],
-                    "kind": "artifact_snapshot",
+                    "kind": component["kind"],
                     "status": "redacted",
                     "reason": "sensitive_content",
                 }

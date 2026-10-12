@@ -17,6 +17,8 @@ class LocalCase:
 
 def main():
     """Create a disposable local Run, retain two completed replies, and show coverage."""
+    # A deterministic toy invocation, not a reconstruction of a real Agent trace.
+    result = sum((1, 2, 3))
     events = [
         {
             "schemaVersion": 1,
@@ -25,7 +27,7 @@ def main():
             "item": {
                 "id": "reply-1",
                 "type": "agent_message",
-                "content": "The probe failed; no compatibility conclusion is available.",
+                "content": f"The arithmetic probe returned {result}.",
             },
         },
         {
@@ -39,6 +41,8 @@ def main():
             },
         },
     ]
+    partial = collect_public_messages(events, source_actor="target_agent")
+    print(f"default_message_coverage={partial['coverage']['public_messages']}")
     with TemporaryDirectory(prefix="kuma-messages-") as repository:
         run = create_run(
             repo_path=repository,
@@ -60,6 +64,7 @@ def main():
         evidence = run.history[0].submission.extensions["assessment_evidence"]
         print(f"completed_public_messages={len(evidence['public_messages'])}")
         print(f"message_coverage={evidence['coverage']['public_messages']}")
+        print(f"execution_coverage={evidence['coverage']['execution']}")
         print("official_assessment=not_requested")
 
 

@@ -13,8 +13,13 @@ from typing import Any
 from ..contracts import JudgeBatchResult
 from ..errors import ConfigurationError, LimitExceededError, ProviderError
 from ..evidence.assessment_contract import ASSESSMENT_CONTRACT
+from ..evidence.runtime_contract import RUNTIME_EVIDENCE_CAPABILITIES_SCHEMA
 from ..repository.case_artifacts import MAX_CASE_ARTIFACT_BYTES, official_original
-from ..repository.privacy import enforce_sensitive_policy, scan_sensitive_json
+from ..repository.privacy import (
+    enforce_sensitive_policy,
+    redact_sensitive_json,
+    scan_sensitive_json,
+)
 from ..timeline import StageTimeline
 from ..transport.backend import (
     BackendClient,
@@ -415,18 +420,60 @@ class OfficialJudgeProvider:
         self._run_locks: dict[str, threading.Lock] = {}
         self._idempotency_lock = threading.Lock()
         self._timelines: dict[str, StageTimeline] = {}
+        self._output_discovery: _JudgeConfig | None = None
 
     def _load_upload_config(self) -> _JudgeConfig:
         """Read and validate official Judge discovery without starting a job.
 
         Official Case/Judge Run construction invokes this before opening runtime
-        state or generating a paid Case. Judge submission reads it again rather than caching a stale
-        configuration across Agent execution. Returns validated upload limits;
+        state or generating a paid Case. This also remembers validated discovery
+        for output preflight. Judge upload reads it again instead of trusting that
+        cached observation across Agent execution. Returns validated upload limits;
         transport errors and safe ProviderError propagate. Only one public GET
         occurs; no Evidence, operation identity or local state is written.
         Known-operation recovery bypasses this method and retains GET-only poll.
         """
-        return _judge_config(self.client.json("GET", "/sdk/judge/config/"))
+        config = _judge_config(self.client.json("GET", "/sdk/judge/config/"))
+        self._output_discovery = config
+        return config
+
+    def _prepare_agent_output(self, output: Any) -> tuple[Any, bool]:
+        """Prepare one detached output before Run history, hashes or local writes.
+
+        Args:
+            output: Already graph-validated caller or OTel final output.
+        Returns:
+            Original safe content, or a detached sanitized projection and True
+            only after the existing redaction capability is explicitly advertised.
+        Raises:
+            SensitiveDataError: Residual secrets or unsupported loss negotiation;
+                Run keeps the input delivered. allow_sensitive never bypasses this.
+            KumaError: Discovery fails before commit; no operation is started.
+        Side Effects:
+            Redacted content without cached discovery triggers the existing
+            configuration GET. No POST, persistent state or mutation of caller
+            objects occurs. Upload rechecks negotiation to fail closed if the
+            server changes later.
+        """
+        safe, changed = redact_sensitive_json(output)
+        enforce_sensitive_policy(
+            scan_sensitive_json(safe, location="output"), allow_sensitive=False
+        )
+        if changed:
+            config = self._output_discovery or self._load_upload_config()
+            if (
+                RUNTIME_EVIDENCE_CAPABILITIES_SCHEMA not in config.evidence_types
+                or "redaction" not in config.runtime_evidence_capabilities
+            ):
+                enforce_sensitive_policy(
+                    scan_sensitive_json(output, location="output"),
+                    allow_sensitive=False,
+                )
+                raise ProviderError(
+                    "Agent output redaction is unsupported",
+                    code="runtime_evidence_unsupported",
+                )
+        return safe, changed
 
     def _run_lock(self, run_id: str) -> threading.Lock:
         """Return a stable per-Run lock so concurrent Judge calls submit only once."""

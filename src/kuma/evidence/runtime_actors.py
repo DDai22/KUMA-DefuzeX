@@ -10,6 +10,44 @@ from ..errors import ValidationError
 from .public_messages import SOURCE_ACTORS
 
 
+def invalid_agent_output_actor() -> ValidationError:
+    """Return a value-free error for an unusable explicit final-output actor."""
+    return ValidationError(
+        "Agent output actor requires a completed nonempty output and public message Evidence",
+        code="agent_output_actor_invalid",
+    )
+
+
+def validate_agent_output_actor(value: Any) -> str | None:
+    """Validate an optional local declaration without inferring its truth.
+
+    Run uses this before capture; official upload revalidates persisted metadata
+    before binding existing provenance to final safe output bytes. None retains
+    unknown attribution. Only the existing SOURCE_ACTORS enum is accepted;
+    invalid types/values raise agent_output_actor_invalid without their repr.
+    No I/O, mutation, runtime wire field or completeness upgrade is introduced.
+    """
+    if value is not None and (not isinstance(value, str) or value not in SOURCE_ACTORS):
+        raise invalid_agent_output_actor()
+    return value
+
+
+def validate_attributed_output(output: Any) -> None:
+    """Require a nonempty already graph-validated output for explicit attribution.
+
+    Run checks before capture and the upload binder rechecks local persisted
+    content. Null, blank strings and empty containers cannot provide a source;
+    numeric zero and False remain valid. Raises the value-free actor error,
+    without mutating content or making any inference about embedded speakers.
+    """
+    if (
+        output is None
+        or (isinstance(output, str) and not output.strip())
+        or (isinstance(output, (Mapping, list, tuple)) and not output)
+    ):
+        raise invalid_agent_output_actor()
+
+
 def invalid_runtime_actor() -> ValidationError:
     """Return a safe selector error without exposing captured values or IDs."""
     return ValidationError(

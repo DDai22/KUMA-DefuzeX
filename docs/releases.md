@@ -6,6 +6,40 @@ main before receiving its own immutable version tag and GitHub Release. This doc
 not evidence that the candidate has shipped. Never move an existing tag or append
 new functionality to an old release as a substitute for a new version.
 
+## 0.3.6 release candidate
+
+This optional patch is prepared for independent review. Source on main or a
+candidate artifact does not establish publication: check the matching immutable
+GitHub Release and PyPI version before relying on availability.
+
+- Preserve bounded Token glossary and consent/authorization prose without
+  disabling real credential, header, structured-field or adjacent-secret checks.
+  Source references and encoded JSON retain their explicit safety boundaries.
+- Redact recognized final Agent output only when the service explicitly supports
+  it. History, local records, hashes and upload share the same sanitized
+  projection and truthful loss markers; unsupported services reject before
+  submission commit. Caller originals remain unchanged.
+- Add optional `Run.submit(agent_output_actor=...)` for explicit final-output
+  producer attribution. References bind the final sanitized Evidence hash and
+  leaf, require a public-message bundle, and do not infer internal speakers,
+  attest execution or upgrade completeness.
+- Show claim-coverage limitations even on passing detailed assessments. Preserve
+  actual verdicts, confidence, findings and observed failure attribution.
+- Reject explicitly requested file-diff upload when advertised capabilities omit
+  `file_diff`, before constructing or posting Judge uploads.
+- Add a runnable free local Agent integration example and clarify contributor
+  verification with the OTel extra.
+
+Thanks to the authors of [PR #137](https://github.com/DefuzeX-AI/KUMA-DefuzeX/pull/137),
+[PR #140](https://github.com/DefuzeX-AI/KUMA-DefuzeX/pull/140), and
+[PR #141](https://github.com/DefuzeX-AI/KUMA-DefuzeX/pull/141).
+These contributions and repairs are not retroactively part of the 0.3.5 artifact.
+
+Server-side assessment improvements require the matching service deployment;
+these SDK notes do not establish that rollout or resolve every historical Judge
+example. No automatic paid retry, new charge, raw transcript collection, or
+guarantee of complete capture or secret detection is introduced.
+
 ## 0.3.5 release notes
 
 This optional patch improves safe diagnostics and readable Official Judgment

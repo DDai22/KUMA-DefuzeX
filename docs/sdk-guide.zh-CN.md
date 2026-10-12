@@ -343,6 +343,15 @@ is synchronous and does not support `wait=False`.
 
 ## Evidence, files, logs, and privacy
 
+Complete environment-reference assignment values such as `PASSWORD=${DB_PASSWORD}`
+or `PASSWORD="${DB_PASSWORD}"` are symbolic instructions, not embedded credentials.
+The same whole `${DB_PASSWORD}` scalar is accepted in a JSON credential field.
+Names must match `[A-Z_][A-Z0-9_]*`. KUMA does not read or expand the environment
+reference. Attached literals, concatenated references, default-value operators,
+and malformed references are not exempted; adjacent real credentials are still
+scanned and redacted. Official signed Cases are validated unchanged, never
+client-redacted to bypass rejection.
+
 Each `get_input()` to `submit()` interval is one Evidence transaction. Evidence commits only after the immutable Submission is appended to History; a failed submission build does not advance log offsets or Trace budgets.
 
 - Repository metadata is bounded and contains paths, types, sizes, and a fingerprint—not repository file contents.
@@ -354,6 +363,70 @@ Each `get_input()` to `submit()` interval is one Evidence transaction. Evidence 
 Framework-neutral runtime metadata follows the [Runtime Evidence contract](runtime-evidence.md). v1 remains hash-only; only an explicitly negotiated output-capable official service receives a scanned completed Agent output. Canonical Agent output is capped at 4 MiB, one Runtime Evidence item at 5 MiB, and the complete official multipart body at 8 MiB. Nothing is truncated. That page is the authoritative schema and privacy reference.
 
 Before official upload, KUMA scans output, errors, paths, diffs, explicit logs, and custom Cases for sensitive material. The API key is used for authorization and is not added to Evidence. `allow_sensitive=True` is an explicit ordinary-Evidence override, not a substitute for isolation or secret hygiene.
+
+Both the default Judge and an explicitly supplied `OfficialJudgeProvider` check
+Agent output before committing the step, including when `allow_sensitive=True`.
+If `SensitiveDataError` is raised, that input remains delivered: remove the secret
+and call `submit()` again. No new history entry or Judge POST was created by that
+rejected submission. Arbitrary custom Judge providers retain their local policy.
+
+The scanner preserves a small, closed set of non-executed source references:
+`db_password = os.environ.get("PGPASSWORD", "")` (also without the empty default),
+the keyword fragment `password=db_password,`, and
+`private_key = Path(tmpdir) / "private.pem"`. Environment names must be uppercase
+identifiers; defaults must be absent or empty. Exact `your_password` and `...`
+assignment placeholders are supported, as is a body-free PEM construction using
+escaped newlines and `"\\n".join(lines)`. These are syntax recognition rules, not
+permission to execute source. Arbitrary function calls/identifiers, nonempty
+defaults, concatenations, real/incomplete PEM data, adjacent secrets and JSON
+credential-field values remain sensitive. Recognized source in an ordinary JSON
+output field is preserved; a credential field is not treated as source code.
+
+Encoded JSON containers are inspected through at most eight nested decoding
+layers. A remaining object/array-shaped string at that budget is not considered
+fully scanned, even if its contents might be harmless: it produces the safe
+`validation_failed` finding rather than relying on escaped raw text. Reduce the
+nested encoding or use the negotiated output-redaction path, which replaces the
+uninspected scalar and records content loss. The exact `[REDACTED]` marker is not
+a container. Original caller data is never modified; arbitrary encodings are not
+decoded or executed to guess whether a secret exists.
+
+For completed official submissions, recognized sensitive Agent output is redacted
+only when the service advertises the existing `redaction` capability with named
+Runtime Evidence. Without cached discovery, it may perform one existing
+`GET /sdk/judge/config/` before step commit, with no Evidence body;
+it never starts a Judge operation. The same detached sanitized output is used for
+history, local records, hashes and upload, accompanied by a component-scoped
+`agent_response_claim` redaction record. Privacy capture is partial with
+`output_redacted`; this is not proof of complete claims or task execution. Caller
+objects and original user files are unchanged. Unsupported services keep the
+existing precommit rejection; a later loss of support blocks POST rather than
+silently dropping the annotation. Residual secrets are always rejected, regardless
+of `allow_sensitive`. Custom Judge content policy is unchanged.
+
+Authorization examples are preserved only when their complete Bearer/Basic value is a recognized placeholder (such as `$TOKEN`, `${ACCESS_TOKEN}`, `YOUR_TOKEN_HERE`, or `<your-access-token>`) or the public RFC 7617 Basic sample. Supported boundaries are the line end or an immediately enclosing, matching single quote, double quote, or backtick, followed by whitespace or the line end; JSON-escaped double quotes are also supported. Two unquoted documentation forms are recognized: `Example: Authorization: Basic YWxhZGRpbjpvcGVuc2VzYW1l (RFC 7617 sample)` and `Set the header to Authorization: Bearer YOUR_TOKEN_HERE before calling.` Other prose suffixes, malformed boundaries, unknown schemes and extra material inside a header remain sensitive. Non-exempt headers are redacted from `Authorization` through the line end; surrounding text and additional headers still undergo credential checks.
+
+The offline contributor regression is `python tools/verify_privacy_authorization.py`.
+It covers documentation/curl examples, malformed boundaries, adjacent credentials,
+Digest and unknown schemes, plus redaction followed by rescanning. Private canonical
+tests additionally retain whole `${ENV_NAME}` assignment/JSON behavior; adjacent
+literal suffixes remain sensitive. Neither check reads environment credentials or
+calls a hosted service.
+
+Token glossary definitions and compound consent/authorization headings are prose,
+not automatically credentials. The SDK recognizes a bounded English explanatory
+form: an unquoted colon label, a value starting with `a`, `an`, or `the`, at least
+five words, ordinary sentence punctuation, and at most 4096 characters on that
+line. For `authorization`, the heading must join another term with `and` or `or`
+(for example, `Consent and authorization`); a bare `Authorization:` header remains
+strict. This is a conservative syntax rule, not a general natural-language or
+secret detector. Other formats may still need rewriting as ordinary prose.
+
+Quoted values, equals assignments and structured credential fields such as
+`{"token": "..."}` remain sensitive. Real key signatures, private-key material,
+and additional credential assignments are scanned independently even alongside
+a safe definition. Recognized prose is preserved without a redaction-loss flag;
+actual credentials still follow negotiated redaction or pre-upload rejection.
 
 ## OpenTelemetry
 
@@ -456,6 +529,49 @@ except KumaError as exc:
 
 Common subclasses include `ConfigurationError`, `AuthenticationError`, `PermissionDeniedError`, `ValidationError`, `SensitiveDataError`, `LimitExceededError`, `InputProtocolError`, `ProviderError`, `KumaTimeoutError`, `ServiceBusyError`, and `ServiceError`.
 
+HTTP admission errors `invalid_manifest` and `sensitive_content_detected` may
+include optional closed `exc.details`: required `rule` and `location`, plus an
+optional `file_index` (integer 0–999, never a boolean). Locations are exactly
+`logs`, `manifest`, `manifest.files`, `evidence`, or `run_context`. For `logs` and
+`evidence`, the index identifies zero-based uploaded-log order; for
+`manifest.files`, it identifies manifest-entry order. Other locations cannot
+carry an index. Missing details preserve older-server behavior; malformed or
+unknown diagnostic fields produce `invalid_response`, without echoing them.
+
+Manifest rules are `manifest_shape`, `manifest_count`, `manifest_entry`,
+`manifest_name_association`, `manifest_hash`, `manifest_evidence_type`,
+`manifest_closed_entry`, `case_association`, `submission_association`, and
+`validation_failed`. Privacy rules are `sensitive_field_name`,
+`named_credential_assignment`, `private_key_pem`, `authorization_bearer`,
+`authorization_header`, `cookie_header`, `provider_secret_key`,
+`github_classic_token`, `github_fine_grained_token`, `slack_token`,
+`defuzex_api_key`, and `validation_failed`. The privacy rule identifies the
+server's first sorted actual match; `validation_failed` means no specific cause
+was attributed. The SDK validates this vocabulary, not the truth of the claim.
+No filenames, dynamic JSON paths, matched values or raw uploads are exposed.
+These fields do not change error messages, retry decisions or asynchronous
+operation contracts. Use the safe HTTP `request_id` for support correlation;
+a supplied valid ID is not proof that the server originated it.
+
+
+When an official generated Case is rejected by the SDK privacy validator, KUMA raises
+`ProviderError(code="service_generated_sensitive_data", retryable=False)`, not a
+caller-input error or generic `invalid_response`. Its closed diagnostic details are
+`source="service_generated_case"`, `reasons=("sensitive_content",)`, and
+`location="public_case"`. No scanner text, matched values, dynamic paths, or raw
+Case content are copied into the exception. Other malformed Case responses still
+use `invalid_response`.
+
+The signed Case is not edited or redacted by the client. Local recovery keeps the
+original operation and idempotency identity without marking the rejected result
+accepted. Repeating the same generation call or `kuma requests resume` for its
+known operation only polls with GET; it does not create a new charged generation.
+`retryable=False` means repeating validation will not repair the content. Preserve
+the request identifier for support; do not change the request or start a new
+operation as a workaround. A server-side success may already have incurred usage;
+this SDK diagnostic does not refund it or claim to prevent that earlier charge.
+
+
 `timeout` bounds one public HTTP attempt. `operation_wait_timeout` bounds the complete official single-Case or Judge operation. POST retries reuse a stable idempotency key; only server-declared transient failures are retried within `max_retries`, and `ServiceBusyError` is not retried automatically.
 
 `exc.request_id` is the actual response's `X-Request-ID`, retained only when it is exactly 32 lowercase hexadecimal characters. It may be `None`: the header is optional, invalid or duplicate headers are ignored, and no ID is invented. It is not proof that the server generated the ID, since the server can echo an incoming ID. For an asynchronous failed operation it identifies the failing poll response, not the original start request. JSON-body IDs, private Core IDs, and the local `kreq_…` client recovery ID are never substituted; use `kuma requests list/show` for that separate local identity. Error class, code, and retry decisions are unchanged.
@@ -491,6 +607,11 @@ If `KeyboardInterrupt`, `SystemExit`, or cancellation interrupts Judge, the exce
 | Missing Trace output | Submit explicit JSON output or install and attach `[otel]` correctly |
 
 ## Reference
+
+Official non-pass reports expose optional local
+`report.extensions["explanation"]` and `report.extensions["step_explanations"]`
+for readable summaries. They preserve the Judge's source findings and never
+assign global causes to steps. See [examples and interpretation limits](judge-assessment.md#local-readable-explanations).
 
 - [Architecture](architecture.md)
 - [Python API reference](api-reference.md)

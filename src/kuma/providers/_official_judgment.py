@@ -181,13 +181,46 @@ def _overall_explanation(status: str, assessment: Mapping[str, Any] | None) -> s
     return " ".join(sentences)
 
 
+def _claim_coverage_notice(assessment: Mapping[str, Any]) -> str:
+    """Describe validated claim-review coverage independently of the verdict.
+
+    Args:
+        assessment: Closed, validated negotiated assessment, including its
+            claim_coverage status. Unknown reason text is never interpolated.
+    Returns:
+        Static English display text for complete, partial or unavailable coverage.
+        This describes the Judge's declared review scope, not observed execution,
+        the truth of Agent claims or completeness of the original capture.
+    Preconditions:
+        Official normalization has validated the assessment before this call.
+    Postconditions:
+        Source status, confidence, axes, reasons and evidence gaps are unchanged.
+    Security/Privacy:
+        Used before local report persistence, including successful verdicts. No
+        remote prose, Evidence body, actor inference, mutation or I/O is involved.
+        Existing validation, not this renderer, rejects unknown status/reason codes.
+    """
+    summary = {
+        "complete": "The Judge reports complete claim-review coverage of the supplied target messages.",
+        "partial": "The Judge reports partial claim-review coverage; some review scope is not covered.",
+        "unavailable": "The Judge reports that claim-review coverage is unavailable.",
+    }[assessment["claim_coverage"]["status"]]
+    return (
+        summary
+        + " This is separate from the overall verdict and assessment axes; a pass "
+        "does not prove all claims were verified. See assessment.claim_coverage "
+        "for the reported reasons and reviewed references."
+    )
+
+
 def _local_explanations(
     status: str, steps: list[Any], assessment: Mapping[str, Any] | None
 ) -> dict[str, Any]:
     """Return optional display extensions after Official response validation.
 
     Args:
-        status: Validated overall verdict; pass and passed produce no fields.
+        status: Validated overall verdict; pass and passed omit verdict wording,
+            but do not suppress the independently reported claim-review coverage.
         steps: Validated public step results, retained unchanged by the caller.
         assessment: Validated global assessment or None for legacy omission.
 
@@ -196,9 +229,12 @@ def _local_explanations(
         No step list is emitted when no non-passed step exists. This pure helper
         delegates static rendering without changing source findings or doing I/O.
     """
+    result: dict[str, Any] = {}
+    if assessment is not None:
+        result["claim_coverage_notice"] = _claim_coverage_notice(assessment)
     if status in {"pass", "passed"}:
-        return {}
-    result: dict[str, Any] = {"explanation": _overall_explanation(status, assessment)}
+        return result
+    result["explanation"] = _overall_explanation(status, assessment)
     steps_text = _step_explanations(steps)
     if steps_text:
         result["step_explanations"] = steps_text
@@ -225,7 +261,7 @@ def normalize_official_judgment(
     assessment_contract is the sealed request expectation, never inferred from
     response fields or refreshed config. Opt-in requires a validated assessment;
     legacy omission stays absent and never becomes three synthetic passes.
-    Optional explanation/step_explanations are SDK-owned static interpretations,
+    Optional explanation/step_explanations/claim_coverage_notice are SDK-owned interpretations,
     derived only after validation; remote fields with that name are not trusted.
     """
 
@@ -269,6 +305,7 @@ def normalize_official_judgment(
         "stop_reason",
         "step_explanations",
         "explanation",
+        "claim_coverage_notice",
     }
     confidence = _validated_confidence(response.get("confidence"))
     if confidence is not None:
