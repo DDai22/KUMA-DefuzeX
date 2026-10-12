@@ -364,13 +364,69 @@ Framework-neutral runtime metadata follows the [Runtime Evidence contract](runti
 
 Before official upload, KUMA scans output, errors, paths, diffs, explicit logs, and custom Cases for sensitive material. The API key is used for authorization and is not added to Evidence. `allow_sensitive=True` is an explicit ordinary-Evidence override, not a substitute for isolation or secret hygiene.
 
+Both the default Judge and an explicitly supplied `OfficialJudgeProvider` check
+Agent output before committing the step, including when `allow_sensitive=True`.
+If `SensitiveDataError` is raised, that input remains delivered: remove the secret
+and call `submit()` again. No new history entry or Judge POST was created by that
+rejected submission. Arbitrary custom Judge providers retain their local policy.
+
+The scanner preserves a small, closed set of non-executed source references:
+`db_password = os.environ.get("PGPASSWORD", "")` (also without the empty default),
+the keyword fragment `password=db_password,`, and
+`private_key = Path(tmpdir) / "private.pem"`. Environment names must be uppercase
+identifiers; defaults must be absent or empty. Exact `your_password` and `...`
+assignment placeholders are supported, as is a body-free PEM construction using
+escaped newlines and `"\\n".join(lines)`. These are syntax recognition rules, not
+permission to execute source. Arbitrary function calls/identifiers, nonempty
+defaults, concatenations, real/incomplete PEM data, adjacent secrets and JSON
+credential-field values remain sensitive. Recognized source in an ordinary JSON
+output field is preserved; a credential field is not treated as source code.
+
+Encoded JSON containers are inspected through at most eight nested decoding
+layers. A remaining object/array-shaped string at that budget is not considered
+fully scanned, even if its contents might be harmless: it produces the safe
+`validation_failed` finding rather than relying on escaped raw text. Reduce the
+nested encoding or use the negotiated output-redaction path, which replaces the
+uninspected scalar and records content loss. The exact `[REDACTED]` marker is not
+a container. Original caller data is never modified; arbitrary encodings are not
+decoded or executed to guess whether a secret exists.
+
+For completed official submissions, recognized sensitive Agent output is redacted
+only when the service advertises the existing `redaction` capability with named
+Runtime Evidence. Without cached discovery, it may perform one existing
+`GET /sdk/judge/config/` before step commit, with no Evidence body;
+it never starts a Judge operation. The same detached sanitized output is used for
+history, local records, hashes and upload, accompanied by a component-scoped
+`agent_response_claim` redaction record. Privacy capture is partial with
+`output_redacted`; this is not proof of complete claims or task execution. Caller
+objects and original user files are unchanged. Unsupported services keep the
+existing precommit rejection; a later loss of support blocks POST rather than
+silently dropping the annotation. Residual secrets are always rejected, regardless
+of `allow_sensitive`. Custom Judge content policy is unchanged.
+
 Authorization examples are preserved only when their complete Bearer/Basic value is a recognized placeholder (such as `$TOKEN`, `${ACCESS_TOKEN}`, `YOUR_TOKEN_HERE`, or `<your-access-token>`) or the public RFC 7617 Basic sample. Supported boundaries are the line end or an immediately enclosing, matching single quote, double quote, or backtick, followed by whitespace or the line end; JSON-escaped double quotes are also supported. Two unquoted documentation forms are recognized: `Example: Authorization: Basic YWxhZGRpbjpvcGVuc2VzYW1l (RFC 7617 sample)` and `Set the header to Authorization: Bearer YOUR_TOKEN_HERE before calling.` Other prose suffixes, malformed boundaries, unknown schemes and extra material inside a header remain sensitive. Non-exempt headers are redacted from `Authorization` through the line end; surrounding text and additional headers still undergo credential checks.
 
 The offline contributor regression is `python tools/verify_privacy_authorization.py`.
 It covers documentation/curl examples, malformed boundaries, adjacent credentials,
-Digest and unknown schemes, plus redaction followed by rescanning. Regression tests additionally retain whole `${ENV_NAME}` assignment/JSON behavior; adjacent
+Digest and unknown schemes, plus redaction followed by rescanning. Private canonical
+tests additionally retain whole `${ENV_NAME}` assignment/JSON behavior; adjacent
 literal suffixes remain sensitive. Neither check reads environment credentials or
 calls a hosted service.
+
+Token glossary definitions and compound consent/authorization headings are prose,
+not automatically credentials. The SDK recognizes a bounded English explanatory
+form: an unquoted colon label, a value starting with `a`, `an`, or `the`, at least
+five words, ordinary sentence punctuation, and at most 4096 characters on that
+line. For `authorization`, the heading must join another term with `and` or `or`
+(for example, `Consent and authorization`); a bare `Authorization:` header remains
+strict. This is a conservative syntax rule, not a general natural-language or
+secret detector. Other formats may still need rewriting as ordinary prose.
+
+Quoted values, equals assignments and structured credential fields such as
+`{"token": "..."}` remain sensitive. Real key signatures, private-key material,
+and additional credential assignments are scanned independently even alongside
+a safe definition. Recognized prose is preserved without a redaction-loss flag;
+actual credentials still follow negotiated redaction or pre-upload rejection.
 
 ## OpenTelemetry
 

@@ -20,11 +20,17 @@ from ..evidence.assessment_contract import (
 )
 from ..evidence.runtime import runtime_submission_id
 from ..evidence.runtime_actors import (
+    invalid_agent_output_actor,
     invalid_runtime_actor,
     selected_span_index,
+    validate_agent_output_actor,
+    validate_attributed_output,
     validate_runtime_actors,
 )
-from ..evidence.runtime_contract import RUNTIME_EVIDENCE_MEDIA_TYPE
+from ..evidence.runtime_contract import (
+    RUNTIME_EVIDENCE_MEDIA_TYPE,
+    runtime_claim_sha256,
+)
 from ..transport.backend import UploadPart
 from ._official_wire import plain_json
 
@@ -38,6 +44,12 @@ def negotiate_assessment(
     a legacy service. None explicitly disables detailed assessment. A message
     bundle requires support rather than being silently discarded. No I/O occurs.
     """
+    if any(
+        item.submission.extensions.get("agent_output_actor") is not None
+        and "assessment_evidence" not in item.submission.extensions
+        for item in context.history
+    ):
+        raise invalid_agent_output_actor()
     messages = any(
         "assessment_evidence" in item.submission.extensions for item in context.history
     )
@@ -222,6 +234,84 @@ def _bind_runtime_actors(
     envelope["provenance"] = declarations
 
 
+def _agent_output_references(
+    envelope: Mapping[str, Any], parts: tuple[UploadPart, ...], expected_hash: str
+) -> list[dict[str, Any]]:
+    """Find same-submission output leaves in already validated runtime parts.
+
+    The actor binder supplies the immutable sanitized Submission output digest.
+    This pure search returns exact ordinal/hash/leaf-pointer references only for
+    completed claims whose stored and recomputed output hashes both match it.
+    Foreign-step and non-runtime parts cannot assign authority. No bytes, caller
+    state or coverage are changed; zero/multiple matches are rejected by caller.
+    """
+    references = []
+    fields = ("run_id", "input_id", "step_id", "submission_id")
+    for ordinal, part in enumerate(parts):
+        if part.content_type != RUNTIME_EVIDENCE_MEDIA_TYPE:
+            continue
+        value = json.loads(part.data)
+        if any(value.get(key) != envelope[key] for key in fields):
+            continue
+        for index, component in enumerate(value["components"]):
+            if (
+                component["kind"] == "agent_response_claim"
+                and component["claim"] == "completed"
+                and "agent_output" in component
+                and component["text_sha256"] == expected_hash
+                and runtime_claim_sha256(component["agent_output"]) == expected_hash
+            ):
+                references.append(
+                    {
+                        "evidence_index": ordinal,
+                        "evidence_sha256": hashlib.sha256(part.data).hexdigest(),
+                        "pointer": f"/components/{index}/agent_output",
+                    }
+                )
+    return references
+
+
+def _bind_agent_output_actor(
+    envelope: dict[str, Any], item: Any, parts: tuple[UploadPart, ...]
+) -> None:
+    """Bind local output attribution to exactly one final hash-bound output leaf.
+
+    Official upload invokes this after safe runtime projection and span binding.
+    Only same-submission completed agent_response_claim.agent_output is eligible;
+    its canonical digest must still match immutable sanitized Submission.output.
+    None means no declaration. Invalid/absent/ambiguous output or overlapping
+    contradictory manual provenance raises agent_output_actor_invalid before
+    POST; committed history stays available for Judge retry. Existing provenance
+    validates duplicates and parent/child conflicts. No coverage, actor inference,
+    caller history, source body or wire schema is changed; this is not attestation.
+    """
+    actor = validate_agent_output_actor(
+        item.submission.extensions.get("agent_output_actor")
+    )
+    if actor is None:
+        return
+    if item.submission.status != "completed":
+        raise invalid_agent_output_actor()
+    validate_attributed_output(item.submission.output)
+    references = _agent_output_references(
+        envelope, parts, runtime_claim_sha256(item.submission.output)
+    )
+    if len(references) != 1:
+        raise invalid_agent_output_actor()
+    declarations = [
+        *envelope["provenance"],
+        {"reference": references[0], "actor": actor},
+    ]
+    invalid = False
+    try:
+        _validated_provenance(declarations)
+    except ValueError:
+        invalid = True
+    if invalid:
+        raise invalid_agent_output_actor()
+    envelope["provenance"] = declarations
+
+
 def append_assessment_parts(
     context: Any,
     config: Any,
@@ -246,6 +336,7 @@ def append_assessment_parts(
             continue
         envelope = _envelope(item)
         _bind_runtime_actors(envelope, item, parts)
+        _bind_agent_output_actor(envelope, item, parts)
         message_count += len(envelope["public_messages"])
         if message_count > 200:
             raise LimitExceededError(

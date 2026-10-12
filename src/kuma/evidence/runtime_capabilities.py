@@ -380,6 +380,7 @@ def project_runtime_evidence_capabilities(
     case_id: str | None = None,
     model_content_supported: bool = False,
     trace_redaction_supported: bool = False,
+    output_redacted: bool = False,
     file_summary_supported: bool = False,
     file_summary: Mapping[str, Any] | None = None,
     max_bytes: int = RUNTIME_EVIDENCE_MAX_BYTES,
@@ -410,6 +411,9 @@ def project_runtime_evidence_capabilities(
         trace_redaction_supported: Whether the existing redaction capability
             was advertised. Otherwise retained redacted tool fields become
             explicit whole-field omissions for legacy closed consumers.
+        output_redacted: True when Run committed sanitized Agent output. Requires
+            negotiated redaction and emits the existing component-scoped loss
+            record; never infers loss from caller text or rewrites stored hashes.
         file_summary_supported: True only when Backend advertises the closed
             file-observation capability; never inferred from schema alone.
         file_summary: Authoritative local file-only counters or None for a
@@ -455,8 +459,34 @@ def project_runtime_evidence_capabilities(
             _omit_unnegotiated_model_content(projected)
         _project_trace_redaction(projected, supported=trace_redaction_supported)
         projected["capabilities"].append("runtime_trace")
-        if "redactions" in projected:
-            projected["capabilities"].append("redaction")
+    if output_redacted:
+        if not trace_redaction_supported or status != "completed":
+            raise ValueError("agent output redaction is not negotiated")
+        claim = next(
+            c for c in projected["components"] if c["kind"] == "agent_response_claim"
+        )
+        projected.setdefault("redactions", []).append(
+            {
+                "component_id": claim["component_id"],
+                "kind": "agent_response_claim",
+                "status": "redacted",
+                "reason": "sensitive_content",
+            }
+        )
+    if "redactions" in projected:
+        for component in projected["components"]:
+            if component.get("diff_omission_reason") == "sensitive_content":
+                projected["redactions"].append(
+                    {
+                        "component_id": component["component_id"],
+                        "kind": "file_change",
+                        "status": "redacted",
+                        "reason": "sensitive_content",
+                    }
+                )
+        order = {c["component_id"]: i for i, c in enumerate(projected["components"])}
+        projected["redactions"].sort(key=lambda r: order[r["component_id"]])
+        projected["capabilities"].append("redaction")
     if file_summary_supported:
         from .runtime_files import FILE_OBSERVATION_CAPABILITY, summary_for_projection
 

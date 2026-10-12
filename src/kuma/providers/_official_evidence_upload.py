@@ -315,6 +315,9 @@ def _runtime_evidence_part(
                     case_id=item.submission.case_id,
                     model_content_supported=model_content_supported,
                     trace_redaction_supported=trace_redaction_supported,
+                    output_redacted=item.submission.extensions.get(
+                        "agent_output_redacted", False
+                    ),
                     file_summary_supported=file_summary_supported,
                     file_summary=file_summary,
                     max_bytes=max_file_bytes,
@@ -389,6 +392,31 @@ def _negotiate_file_summary(
     return summary
 
 
+def _require_output_redaction(context: JudgeContext, config: JudgeUploadConfig) -> None:
+    """Fail before multipart when stored output loss cannot be represented.
+
+    Typed and legacy upload selection share this check. Local loss flags must be
+    exact booleans; any recorded loss requires named Runtime Evidence and explicit
+    redaction advertisement. Configuration drift never drops the existing marker.
+    No body, state or network is changed; safe ProviderError identifies failure.
+    """
+    output_flags = [
+        item.submission.extensions.get("agent_output_redacted", False)
+        for item in context.history
+    ]
+    if any(type(flag) is not bool for flag in output_flags):
+        raise ProviderError(
+            "Agent output redaction is invalid", code="runtime_evidence_invalid"
+        )
+    if any(output_flags) and (
+        RUNTIME_EVIDENCE_CAPABILITIES_SCHEMA not in config.evidence_types
+        or "redaction" not in config.runtime_evidence_capabilities
+    ):
+        raise ProviderError(
+            "Agent output redaction is unsupported", code="runtime_evidence_unsupported"
+        )
+
+
 def _validate_file_diff_support(
     config: JudgeUploadConfig, *, upload_diff: bool
 ) -> None:
@@ -441,6 +469,7 @@ def _runtime_evidence_parts(
     trace_enabled = any(
         "trace_evidence" in item.submission.extensions for item in context.history
     )
+    _require_output_redaction(context, config)
     _validate_trace_associations(context)
     _validate_file_diff_support(config, upload_diff=context.upload_diff)
     if trace_enabled and "runtime_trace" not in config.runtime_evidence_capabilities:

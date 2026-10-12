@@ -856,7 +856,11 @@ def create_run(
             upload_diff=config.upload_diff,
             save_local=config.save_local,
             allow_sensitive=config.allow_sensitive,
-            block_sensitive=official_judge or trace_evidence is not None,
+            block_sensitive=(
+                official_judge
+                or isinstance(adapted_judge_provider, OfficialJudgeProvider)
+                or trace_evidence is not None
+            ),
             persistent_path=runtime.workspace.persistent_path,
             run_id=run_id,
             case_id=case.case_id,

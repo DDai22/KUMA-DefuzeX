@@ -245,6 +245,8 @@ but it never calls Judge or appends history.
 | `public_messages` | `Mapping[str, Any] \\| None` | `None` | Pass the bounded bundle returned by `kuma.collect_public_messages` for this Input. Preserves earlier completed public messages, excludes reasoning, redacts before local persistence, and requires negotiated assessment support for Official Judge. [Exact capture/result contract](judge-assessment.md). |
 | `runtime_actors` | `Sequence[Mapping[str, str]] \| None` | `None` | List/tuple of at most 1000 closed `{trace_id, span_id, actor}` declarations for this Input's captured OTel spans. Requires `public_messages`; unknown is the default for undeclared spans. IDs are nonzero lowercase 32/16-character hex. Exact matching, no descendant inference or completeness upgrade. Missing/ambiguous/duplicate selectors fail before commit; final hashes and pointers bind before POST. See [actor workflow and retry boundaries](judge-assessment.md#attribute-captured-execution-explicitly). |
 
+| `agent_output_actor` | `str \\| None` | `None` | Explicit producer of the entire observed final output: `target_agent`, `sdk_setup`, `external_evaluator`, `reviewer`, `cross_case_reference`, or `unknown`. Default leaves it unknown. Requires completed nonempty output, Runtime Evidence and `public_messages` (an honest empty bundle is allowed). Binds the sanitized final output hash/leaf before official upload; no inferred internal speakers, execution proof or completeness upgrade. Invalid declarations fail before commit with `agent_output_actor_invalid`. See [output attribution](judge-assessment.md#attribute-an-observed-final-output-explicitly). |
+
 <!-- api-parameters:submit:end -->
 
 **Returns:** `TestReport` only when the final Submission completes Judge;
@@ -475,7 +477,7 @@ The main immutable contracts are exported from `kuma`:
 | `KumaInput` | `run_id`, `case_id`, `input_id`, zero-based `index`, `payload_type`, frozen `payload`, public constraints, schema version, and public extensions. |
 | `Submission` | Correlated IDs, terminal step `status`, JSON output/error, capture completeness, bounded logs/file Evidence, dropped/missing counters, schema version, and extensions. |
 | `HistoryItem` | One `KumaInput` paired with its ID-matching `Submission`. |
-| `TestReport` | `report_id`, `run_id`, `status` (`pass`, `issue`, or `insufficient_evidence`), confidence, stop reason, public issues/evidence gaps, and extensions. Official non-pass reports may include local `explanation` and `step_explanations`; see [interpretation and limits](judge-assessment.md#local-readable-explanations). |
+| `TestReport` | `report_id`, `run_id`, `status` (`pass`, `issue`, or `insufficient_evidence`), confidence, stop reason, public issues/evidence gaps, and extensions. Official reports with negotiated assessment include a local `claim_coverage_notice` even on pass; non-pass reports may also include `explanation` and `step_explanations`. These do not change verdict/confidence or fabricate gaps; see [interpretation and limits](judge-assessment.md#local-readable-explanations). |
 | `CaptureStatus` | Completeness for file snapshot/diff, logs, sensitive scan, and traces. Each component is `complete`, `partial`, `failed`, or `skipped`. |
 
 Private Rubrics, prompts, model settings, and Core records are not part of these

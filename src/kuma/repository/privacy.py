@@ -21,6 +21,22 @@ _CREDENTIAL_NAME = (
 )
 _CREDENTIAL_KEY = re.compile(rf"(?i)^{_CREDENTIAL_NAME}$")
 _BRACED_ENV_REFERENCE = re.compile(r"\$\{[A-Z_][A-Z0-9_]*\}")
+_SOURCE_REFERENCE = re.compile(
+    r"""(?mx)^[\t ]*(?:
+    [A-Za-z_][A-Za-z0-9_]*[\t ]*=[\t ]*
+      (?P<environment>os\.environ\.get\([\t ]*
+        (?P<quote>["'])[A-Z_][A-Z0-9_]*(?P=quote)
+        (?:[\t ]*,[\t ]*(?:""|''))?[\t ]*\))
+    |password[\t ]*=[\t ]*(?P<keyword>db_password),
+    |private_key[\t ]*=[\t ]*(?P<path>Path\(tmpdir\)[\t ]*/[\t ]*"private\.pem")
+    )[\t ]*$"""
+)
+_PEM_SOURCE_TEMPLATE = re.compile(
+    r"""(?mx)^[\t ]*pem[\t ]*=[\t ]*\(
+    "(?P<header>-----BEGIN\ PRIVATE\ KEY-----)\\n"[\t ]*\+[\t ]*
+    "\\n"\.join\(lines\)[\t ]*\+[\t ]*
+    "\\n-----END\ PRIVATE\ KEY-----\\n"\)[\t ]*$"""
+)
 _ASSIGNMENT = re.compile(
     rf"(?i)(?<![\w])(?P<label>{_CREDENTIAL_NAME}[\"']?\s*[:=]\s*(?:\*\*\s*)?)"
     r"(?P<value>(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|"
@@ -142,9 +158,22 @@ def scan_sensitive_path(
 def scan_sensitive_text(text: str, *, location: str) -> tuple[SensitiveFinding, ...]:
     """Scan bounded text for credential and private-data signatures."""
     safe_authorization_spans = _safe_authorization_spans(text)
+    source_spans = _source_reference_spans(text)
+    pem_spans = tuple(m.span("header") for m in _PEM_SOURCE_TEMPLATE.finditer(text))
     findings = []
     for kind, pattern in _TEXT_PATTERNS:
         matches = pattern.finditer(text)
+        if kind in {"private_key", "credential_assignment"}:
+            matches = (
+                match
+                for match in matches
+                if not _inside_spans(
+                    match.span()
+                    if kind == "private_key"
+                    else (match.end() - 1, match.end()),
+                    pem_spans if kind == "private_key" else source_spans,
+                )
+            )
         if kind == "authorization_bearer":
             matches = (
                 match
@@ -161,21 +190,42 @@ def scan_sensitive_text(text: str, *, location: str) -> tuple[SensitiveFinding, 
     if any(
         _assignment_is_secret(match)
         and not _inside_spans(match.span(), safe_authorization_spans)
+        and not _inside_spans(match.span("value"), source_spans)
         for match in _ASSIGNMENT.finditer(text)
     ):
         findings.append(SensitiveFinding("credential_assignment", location))
     return tuple(findings)
 
 
+def _source_reference_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Locate only closed, non-executed source-reference RHS forms.
+
+    The scanner and redactor share this recognition. Whole standalone statements
+    must match; quoted JSON values, comments, operators, nonempty defaults and
+    arbitrary calls/names are not exemptions. Only the RHS is exempted from the
+    assignment heuristic; independent credential signatures still inspect it.
+    No imports, environment reads, parsing execution or filesystem access occur.
+    The keyword and Path forms intentionally cover only the documented examples.
+    """
+    return tuple(
+        match.span(name)
+        for match in _SOURCE_REFERENCE.finditer(text)
+        if match.end() - match.start() <= 4096
+        for name in ("environment", "keyword", "path")
+        if match[name] is not None
+    )
+
+
 def _assignment_is_secret(match: re.Match[str]) -> bool:
     """Keep machine assignments strict while recognizing bounded prose contexts.
 
     Detection and replacement share these rules. Exact documentation placeholders
-    carry no credential value. Only unquoted colon labels with explicit academic,
-    employment, no-auth or token-definition wording qualify as prose. Passwords,
+    carry no credential value. Only unquoted colon labels with bounded glossary
+    syntax or existing academic, employment and no-auth wording qualify as prose. Passwords,
     short real secrets, equals assignments and quoted values remain sensitive;
     independent known-token/private-key signatures still scan the whole text.
-    Whole braced environment references are syntax only, never resolved. The
+    Whole braced environment references and exact your_password/ellipsis
+    placeholders are syntax only, never resolved. The
     assignment matcher consumes adjacent scalar fragments together so a valid
     reference cannot exempt an attached literal, expansion operator or suffix.
     """
@@ -184,7 +234,7 @@ def _assignment_is_secret(match: re.Match[str]) -> bool:
         value = value[1:-1]
     if _BRACED_ENV_REFERENCE.fullmatch(value):
         return False
-    if value in {"", REDACTED} or re.fullmatch(
+    if value in {"", REDACTED, "your_password", "..."} or re.fullmatch(
         r"(?:<[A-Za-z][A-Za-z0-9_-]*>|\$[A-Z_][A-Z0-9_]*|YOUR_[A-Z_]+|sk-[.…]+)`?",
         value,
     ):
@@ -193,9 +243,11 @@ def _assignment_is_secret(match: re.Match[str]) -> bool:
 
 
 def _assignment_is_prose(match: re.Match[str]) -> bool:
-    """Share the existing bounded prose exceptions without exempting their tails."""
+    """Share bounded glossary/legacy prose recognition without exempting tails."""
     if "=" in match["label"] or match["value"].startswith(("'", '"')):
         return False
+    if _glossary_prose(match):
+        return True
     value = match["value"]
     label = match["label"].split(":", 1)[0].casefold()
     tail = match.string[match.start("value") :].splitlines()[0]
@@ -219,6 +271,47 @@ def _assignment_is_prose(match: re.Match[str]) -> bool:
         return True
     pattern = contexts.get(label)
     return pattern is not None and re.match(pattern, tail, re.IGNORECASE) is not None
+
+
+def _glossary_prose(match: re.Match[str]) -> bool:
+    """Recognize bounded explanatory colon prose, never a machine secret slot.
+
+    Shared by text scanning and redaction through assignment/header handling.
+    A token glossary value must start with an article and contain at least five
+    ordinary words. Authorization additionally needs a compound prose heading
+    joined by 'and' or 'or'; a bare Authorization header remains strict. Quotes,
+    equals signs, code delimiters and non-prose characters do not qualify.
+    JSON credential keys are validated separately and never use this exemption.
+
+    Returns:
+        Whether the first matched scalar is part of that explanatory sentence.
+        Only that scalar is exempted; independent signatures and subsequent
+        assignments still scan the whole body. This is syntax classification,
+        not proof that arbitrary natural-language content contains no secrets.
+
+    Side Effects:
+        None; no external reads, execution or mutation.
+    """
+    label = match["label"].split(":", 1)[0].casefold()
+    if label not in {"token", "authorization"}:
+        return False
+    tail = match.string[match.start("value") :].splitlines()[0]
+    if len(tail) > 4096 or re.fullmatch(r"[A-Za-z\s.,()'\-]+", tail) is None:
+        return False
+    words = re.findall(r"[A-Za-z]+", tail)
+    if len(words) < 5 or words[0].casefold() not in {"a", "an", "the"}:
+        return False
+    if label == "token":
+        return True
+    prefix = match.string[: match.start()].rsplit("\n", 1)[-1]
+    return (
+        re.fullmatch(
+            r"(?i)[ \t]*(?:[-*][ \t]+)?(?:\*\*)?"
+            r"[A-Za-z]+(?:[ \t]+[A-Za-z]+)*[ \t]+(?:and|or)[ \t]+",
+            prefix,
+        )
+        is not None
+    )
 
 
 def _authorization_match_is_secret(match: re.Match[str]) -> bool:
@@ -332,8 +425,8 @@ def redact_sensitive_text(text: str) -> str:
 
     Returns:
         Unchanged safe text or text with literal ``[REDACTED]`` markers. Any
-        private-key BEGIN marker omits the entire text, including incomplete
-        PEM blocks; headers are removed as whole lines rather than leaving
+        private-key BEGIN marker outside the closed source template omits the
+        entire text, including incomplete PEM blocks; headers are removed rather than leaving
         unsafe cookie tails. No claim of detecting unknown secrets is made.
 
     Postconditions:
@@ -344,9 +437,16 @@ def redact_sensitive_text(text: str) -> str:
         None. Callers must recompute digests and mark changed Evidence partial;
         this function must not be applied indiscriminately to protocol IDs.
     """
-    if _TEXT_PATTERNS[0][1].search(text):
+    pem_spans = tuple(m.span("header") for m in _PEM_SOURCE_TEMPLATE.finditer(text))
+    if any(
+        not _inside_spans(m.span(), pem_spans)
+        for m in _TEXT_PATTERNS[0][1].finditer(text)
+    ):
         return REDACTED
+    source_spans = _source_reference_spans(text)
     for match in _ASSIGNMENT.finditer(text):
+        if _inside_spans(match.span("value"), source_spans):
+            continue
         scalar = match["value"]
         if scalar.startswith(("'", '"')) and (
             len(scalar) == 1 or scalar[-1] != scalar[0]
@@ -354,6 +454,7 @@ def redact_sensitive_text(text: str) -> str:
             return REDACTED
     result = _redact_authorization_headers(text)
     safe_authorization_spans = _safe_authorization_spans(result)
+    source_spans = _source_reference_spans(result)
     bearer_pattern = dict(_TEXT_PATTERNS)["authorization_bearer"]
     result = bearer_pattern.sub(
         lambda match: (
@@ -369,8 +470,10 @@ def redact_sensitive_text(text: str) -> str:
 
     def replace_assignment(match: re.Match[str]) -> str:
         """Retain an assignment label but never its sensitive scalar value."""
-        if not _assignment_is_secret(match) or _inside_spans(
-            match.span(), safe_authorization_spans
+        if (
+            not _assignment_is_secret(match)
+            or _inside_spans(match.span("value"), source_spans)
+            or _inside_spans(match.span(), safe_authorization_spans)
         ):
             return match[0]
         return match["label"] + '"' + REDACTED + '"'
@@ -500,24 +603,61 @@ def _redact_graph(value: Any, depth: int) -> tuple[Any, bool]:
     return value, False
 
 
+def _decoded_container(text: str, encoded_depth: int) -> Any:
+    """Decode a bounded nested JSON container for scanning, never source code.
+
+    Return None when the eight-layer bound, syntax, duplicate keys or canonical
+    graph limits reject decoding. The caller must mark an uninspected container
+    at the budget as validation_failed; raw text scanning alone cannot discharge
+    that boundary. No values are included in errors or logs.
+    """
+    if encoded_depth >= 8 or not text.lstrip().startswith(("{", "[")):
+        return None
+    try:
+        return detach_json(json.loads(text, object_pairs_hook=_unique_fields))
+    except (ValueError, TypeError, RecursionError):
+        return None
+
+
 def scan_sensitive_json(value: Any, *, location: str) -> tuple[SensitiveFinding, ...]:
-    """Recursively scan JSON keys and scalar values for sensitive data."""
+    """Scan JSON values and bounded encoded containers without treating keys as code.
+
+    Upload callers may supply plain graphs or serialized JSON. Valid containers
+    are decoded with duplicate-key rejection; at most eight encoded layers are
+    traversed. Beyond that budget, container-shaped strings produce a value-free
+    validation_failed finding, even without a visible credential. Raw scanning
+    cannot prove escaped fields safe. The exact redaction marker is not a JSON
+    container. Malformed strings within budget retain raw text scanning.
+    Credential-labelled values are checked before source-reference recognition.
+    No caller objects are changed, source evaluated, or values retained in findings.
+    """
     findings: list[SensitiveFinding] = []
 
-    def visit(item: Any) -> None:
+    def visit(item: Any, encoded_depth: int = 0) -> None:
         """Visit nested JSON values while applying the sensitive-data scanner."""
         if isinstance(item, Mapping):
             for key, child in item.items():
                 if _credential_value(str(key), child):
                     findings.append(SensitiveFinding("credential_field", location))
                 findings.extend(scan_sensitive_text(str(key), location=location))
-                visit(child)
+                visit(child, encoded_depth)
         elif isinstance(item, Sequence) and not isinstance(
             item, (str, bytes, bytearray)
         ):
             for child in item:
-                visit(child)
+                visit(child, encoded_depth)
         elif isinstance(item, str):
+            if (
+                encoded_depth >= 8
+                and item != REDACTED
+                and item.lstrip().startswith(("{", "["))
+            ):
+                findings.append(SensitiveFinding("validation_failed", location))
+                return
+            decoded = _decoded_container(item, encoded_depth)
+            if decoded is not None:
+                visit(decoded, encoded_depth + 1)
+                return
             findings.extend(scan_sensitive_text(item, location=location))
 
     visit(value)

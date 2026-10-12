@@ -350,6 +350,8 @@ class EvidenceCollector:
         logs: Sequence[str] | None,
         assessment_evidence: Mapping[str, Any] | None = None,
         runtime_actors: Sequence[Mapping[str, str]] = (),
+        output_redacted: bool = False,
+        agent_output_actor: str | None = None,
     ) -> PreparedEvidence:
         """Stage all Evidence owned by one Input for transactional Submission.
 
@@ -363,6 +365,12 @@ class EvidenceCollector:
         Args:
             input_id: Exact active input identifier; mismatches fail closed.
             output: Already validated JSON-compatible Agent output.
+            output_redacted: Internal negotiated redaction flag from Run. Marks
+                loss before local persistence; output already contains only safe
+                content and is the sole source for history and claim hashing.
+            agent_output_actor: Run-validated optional source declaration for
+                completed output. Stored only as local metadata; the official
+                upload layer binds existing provenance after final projection.
             status: Stable Submission outcome.
             error: Optional caller-safe error summary.
             assessment_evidence: Optional already validated/redacted message
@@ -422,6 +430,14 @@ class EvidenceCollector:
             findings=findings,
             prepared_traces=prepared_traces,
         )
+        if output_redacted:
+            summary.status = replace(
+                summary.status,
+                sensitive_scan=CaptureComponent(
+                    status="partial", reasons=("output_redacted",)
+                ),
+            )
+            summary.missing.append("output_redacted")
         extensions = self._evidence_extensions(
             input_id=input_id,
             status=status,
@@ -430,8 +446,12 @@ class EvidenceCollector:
             prepared_logs=prepared_logs,
             prepared_files=prepared_files,
             summary=summary,
-            sensitive_detected=bool(findings),
+            sensitive_detected=bool(findings) or output_redacted,
         )
+        if output_redacted:
+            extensions["agent_output_redacted"] = True
+        if agent_output_actor is not None:
+            extensions["agent_output_actor"] = agent_output_actor
         if assessment_evidence is not None:
             extensions["assessment_evidence"] = assessment_evidence
         if runtime_actors:

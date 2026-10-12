@@ -21,17 +21,22 @@ messages = collect_public_messages(
 )
 run.submit(final_output, public_messages=messages)
 assessment = run.report.extensions.get("assessment")
+print(run.report.extensions.get("claim_coverage_notice", ""))
 if assessment is None:
     print("Detailed assessment was not performed")
 else:
     print(assessment["task_completion"])
     print(assessment["artifact_quality"])
     print(assessment["behavioral_integrity"])
+    print(assessment["claim_coverage"])
 ```
 
 Run the credential-free example with `python examples/public_messages.py`.
 It uses a custom local Case and disables Judge: it demonstrates capture, not a
 fabricated official assessment. No model, credentials or network are required.
+The example compares default incomplete capture with an explicitly complete toy
+stream. In a real integration, use your runner's actual event list, not these demo
+messages or a transcript reconstructed from final output or tool logs.
 
 `collect_public_messages(events, *, source_actor="unknown", source_complete=False)`:
 
@@ -50,6 +55,10 @@ being silently called complete. Known lifecycle events are not messages; reasoni
 and tool events are deliberately excluded, not copied into message content.
 
 `Run.submit(public_messages=...)` defaults to `None`, retaining existing behavior.
+Omission does not create a message transcript and does not discard separately
+captured Agent output or Trace Evidence. Do not set `source_complete=True` merely
+because a final reply exists: it declares that all public events for that invocation
+were collected, not that the Agent finished the task or its claims are true.
 Supply the bundle for each corresponding Input. It is validated and redacted
 before Evidence preparation or local Submission persistence. It does not replace
 `output`, execute an Agent, or turn public self-report into independent evidence.
@@ -132,6 +141,92 @@ POST; if Submission already committed, the Run remains `completed` and retries
 with `run.judge()`, not a second `submit`. After a remote operation exists, recovery
 remains GET-only. Manual advanced provenance and selectors cannot overlap with
 conflicting actors or duplicate the same reference. No runtime schema changed.
+
+## Attribute an observed final output explicitly
+
+`Run.submit(agent_output_actor=None)` leaves the final output's producer unknown.
+If your runner directly received that output from the isolated target invocation,
+it may pass `agent_output_actor="target_agent"`. The accepted strings are exactly
+`target_agent`, `sdk_setup`, `external_evaluator`, `reviewer`,
+`cross_case_reference`, `unknown`; setup/reviewer output must keep that identity.
+Do not infer it from a span name, ancestor, error string or the output's contents.
+
+```python
+# observed_return is the actual return value of the target invocation for this Input.
+# If no public-message events were captured, disclose that instead of inventing them.
+run.submit(
+    observed_return,
+    agent_output_actor="target_agent",
+    public_messages=collect_public_messages([]),
+)
+```
+
+Run `python examples/agent_output_actor.py` for a credential-free example using
+an actual deterministic local function as the target; Judge is disabled. In a
+real integration, retain real public messages when available. The empty bundle
+above is not complete capture and does not synthesize a transcript.
+
+Explicit output attribution requires Runtime Evidence capture, a supplied valid
+`public_messages` bundle and `status="completed"`. Null, blank/whitespace-only
+strings and empty objects/arrays are not eligible; `0` and `False` are valid
+nonempty JSON values. Invalid actors, missing capture/bundle or incompatible
+status fail with value-free `ValidationError(code="agent_output_actor_invalid")`
+before commit; normal output validation still rejects invalid output types.
+
+The declaration is stored only in local Submission metadata. Official upload
+revalidates it and binds existing assessment provenance to the exact final
+`/components/<n>/agent_output` leaf, Evidence ordinal and serialized byte hash.
+Binding happens **after** privacy redaction and projection, never against the
+original sensitive output. Missing/ambiguous final output or duplicate/conflicting
+parent/child declarations fail before POST; after commit, retry `run.judge()`.
+Old services lacking the needed output/assessment support do not silently discard
+the declaration. Existing `runtime_actors` still label only their selected spans.
+
+This names the producer of the whole value, not every speaker in a structured
+conversation or quotation inside it. It does not prove execution, make embedded
+third-party text an Agent assertion, change any verdict, or upgrade capture to
+complete. Core decides whether existing attributable output can support partial
+claim review; an SDK actor declaration alone does not guarantee that fallback.
+
+## Record an observed model-call failure without guessing its cause
+
+The existing Runtime Trace contract can retain a model span's OTel status as
+`unset`, `ok` or `error`, plus its recorded `gen_ai.operation.name` (for example,
+`chat` or `text_completion`). An instrumentation boundary that actually observes
+a failed call may set `Status(StatusCode.ERROR)` on that call's span. Do not set
+it merely because an Agent's output contains an error-like phrase or is empty.
+Status descriptions are not copied into the normalized span; do not add raw
+provider diagnostics, credentials, account information or host paths as attributes.
+
+For a span you can attribute to the target invocation, supply its exact
+`trace_id`/`span_id` with `actor="target_agent"` through `runtime_actors`, as above.
+Setup and reviewer calls must retain their own actor. Unselected spans remain
+unknown; the actor is a caller declaration, not authenticated proof. The SDK
+binds it to the final uploaded Evidence using the existing assessment provenance
+reference: `evidence_index`, `evidence_sha256` and a pointer such as
+`/components/2/trace_evidence/spans/0`. Never predict that ordinal or pointer in
+application code, and never infer actors from names or message text.
+
+If your runner observed that the step could not finish, it may submit
+`status="failed"`, `"timeout"` or `"aborted"` with a short safe `error` summary.
+These statuses map to an unverified `agent_response_claim` with `claim="blocked"`
+and a hash, not an authenticated infrastructure finding; completed output maps
+to `claim="completed"`. Do not relabel a completed step just to influence Judge.
+Actor selectors still require a `public_messages` bundle; a genuinely empty
+captured stream may use `collect_public_messages([])`, which does not invent a
+message or claim full capture.
+
+An observed `error` proves only that instrumentation marked that invocation as
+failed. It does **not** establish a vendor outage, insufficient balance, an
+environment cause, or whether the Agent submitted an invalid request. It does
+not excuse independent false claims or forbidden actions. Task completion,
+artifact quality and behavioral integrity remain separate service judgments;
+the SDK does not change verdicts or confidence from Trace status, blank output,
+or substrings. For example, preserve a genuine statement that a test was not run
+alongside the failed-call observation; do not replace other observed behavior
+with a generic environment-failure label. Missing capture remains a gap, not
+proof the call succeeded or failed. No new failure field or adapter is required
+for these existing observations.
 
 ## Exact capture fields and limits
 
@@ -257,10 +352,18 @@ be treated as three detailed passes.
 ## Local readable explanations
 
 After validating an Official Judgment, the SDK adds optional display fields to
-`Report.extensions` for non-pass reports:
+`Report.extensions`:
+
+- `claim_coverage_notice`: a static English string under 600 characters whenever
+  a negotiated assessment exists, **including pass reports**. It separately
+  displays the Judge's `complete`, `partial` or `unavailable` claim-review coverage.
+  `partial` and `unavailable` are not verdicts, and `complete` is not proof every
+  claim is true or every original event was captured. Read the unchanged
+  `assessment.claim_coverage.reason_codes` and `reviewed_message_refs` for detail.
+  Legacy omission produces no notice, not a fabricated `unavailable` assessment.
 
 - `explanation`: a static English summary (under 1600 characters) of the overall
-  verdict and any validated global attribution or axis `missing_evidence` /
+  non-pass verdict and any validated global attribution or axis `missing_evidence` /
   `partial_capture` reason. These are explicitly **Judge-reported claims**, not
   independent proof that capture failed or that the Agent is defective.
 - `step_explanations`: one `{step_id, message}` entry per non-passed step, in
@@ -272,13 +375,15 @@ After validating an Official Judgment, the SDK adds optional display fields to
 
 ```python
 if report is not None:
+    print(report.extensions.get("claim_coverage_notice", ""))
     print(report.extensions.get("explanation", ""))
     for entry in report.extensions.get("step_explanations", ()):
         print(entry["step_id"], entry["message"])
 ```
 
-Passed reports get neither field; reports without non-passed steps omit the
-step list. Older saved reports and custom Judge reports need not have either
+Passed reports omit `explanation` and `step_explanations`, but retain the separate
+claim-coverage notice when assessment was negotiated. Reports without non-passed
+steps omit the step list. Older saved reports and custom Judge reports need not have any
 field. Newly saved Official reports preserve these local explanations; existing
 reports are not rewritten. Remote fields with these names cannot supply their
 text. No model call, private Evidence read or new server field is involved.
