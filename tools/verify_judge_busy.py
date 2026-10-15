@@ -42,7 +42,9 @@ class JudgeBusyTests(unittest.TestCase):
         client = BackendClient("dfx_test", base_url="https://example.test")
         with self.assertRaises(KumaError) as caught:
             client.multipart("/sdk/judge/", {}, (), idempotency_key="same-key")
-        self.assert_busy(caught.exception, False)
+        self.assert_busy(
+            caught.exception, False, support_id="0123456789abcdef0123456789abcdef"
+        )
         self.assertEqual(
             caught.exception.request_id, "0123456789abcdef0123456789abcdef"
         )
@@ -50,10 +52,13 @@ class JudgeBusyTests(unittest.TestCase):
         self.assertIsNone(caught.exception.__context__)
         self.assertEqual(opened.call_count, 1)
 
-    def assert_busy(self, error, retryable):
+    def assert_busy(self, error, retryable, support_id=None):
         self.assertIsInstance(error, ServiceBusyError)
         self.assertEqual(error.code, "service_busy")
-        self.assertEqual(str(error), "Service is busy. Please try again later.")
+        suffix = f" Support ID: {support_id}" if support_id is not None else ""
+        self.assertEqual(
+            str(error), "Service is busy. Please try again later." + suffix
+        )
         self.assertEqual(error.retryable, retryable)
         self.assertEqual(dict(error.details), {})
 
