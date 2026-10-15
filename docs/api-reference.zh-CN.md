@@ -487,6 +487,12 @@ bounded, scanned completed Agent output. Both formats are defined in the
 
 ## Error fields
 
+`support_code: str | None` is an optional opaque support category from exactly
+one validated `X-KUMA-Support-Code` response header (`SB000`–`SB003`). Official
+busy errors display it alongside a valid response `request_id`; missing/invalid
+headers and non-busy errors leave it `None`. It is not inferred from error text,
+used for retry decisions or added to the JSON wire. See [error display](public-error-diagnostics.md).
+
 Catch `KumaError` for normal SDK failures. `str(exc)` is a safe user-facing
 message. Program logic should use `exc.code`, `exc.retryable`, and
 `exc.request_id`; `exc.details` is a bounded public mapping and should be logged

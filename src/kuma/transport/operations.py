@@ -32,7 +32,7 @@ from .backend import (
     _public_error_details,
     mapped_error,
 )
-from .http import response_request_id
+from .http import response_request_id, response_support_code
 
 _DEFAULT_RESUME_POLL_MS = 1_000
 _MIN_POLL_MS = 100
@@ -715,6 +715,7 @@ def await_operation(
                 message=error[2],
                 details=error[3],
                 request_id=response_request_id(response),
+                support_code=response_support_code(response),
             )
             raise _operation_error(state, failure)
         _ensure_time_remaining(deadline)

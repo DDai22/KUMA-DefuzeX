@@ -47,9 +47,11 @@ from .error_details import (
 from .http import (
     WireResponse,
     header_request_id,
+    header_support_code,
     request_timeout,
     retry_delay,
     safe_request_id,
+    safe_support_code,
     validate_request,
     validated_response,
 )
@@ -87,6 +89,7 @@ class _RemoteError(Exception):
         payload: Mapping[str, Any] | None = None,
         *,
         request_id: str | None = None,
+        support_code: str | None = None,
     ) -> None:
         """Retain an HTTP failure for later conversion to a public SDK error.
 
@@ -96,6 +99,7 @@ class _RemoteError(Exception):
                 response object was available.
             request_id: Optional HTTP response correlation header. Invalid
                 spellings are discarded; JSON-body IDs are not trusted.
+            support_code: Optional closed opaque response header; never body text.
 
         Preconditions:
             ``status`` comes from the HTTP boundary; ``payload`` has already
@@ -114,6 +118,7 @@ class _RemoteError(Exception):
         """
         self.status = status
         self.request_id = safe_request_id(request_id)
+        self.support_code = safe_support_code(support_code)
         self.payload = dict(payload or {})
         super().__init__(f"HTTP {status}")
 
@@ -316,8 +321,9 @@ def _wire_transport(
         into user-visible messages. The Authorization header is not logged.
         All redirects are rejected before a follow-up request, even on the same
         origin. Configure the final Backend URL rather than a redirecting alias.
-        HTTP error and decoded success responses carry only a validated
-        X-Request-ID as separate metadata; no other response headers are retained.
+        HTTP error and decoded success responses carry only validated
+        X-Request-ID and closed X-KUMA-Support-Code as separate metadata;
+        no other response headers are retained.
     """
     request = Request(url, data=body, headers=dict(headers), method=method)
     try:
@@ -326,6 +332,7 @@ def _wire_transport(
                 status=response.status,
                 payload=_read_response(response, response.status),
                 request_id=header_request_id(getattr(response, "headers", None)),
+                support_code=header_support_code(getattr(response, "headers", None)),
             )
         schedule_update_check()
         return result
@@ -338,7 +345,12 @@ def _wire_transport(
                 payload = nested.payload
         finally:
             exc.close()
-        raise _RemoteError(exc.code, payload, request_id=request_id) from None
+        raise _RemoteError(
+            exc.code,
+            payload,
+            request_id=request_id,
+            support_code=header_support_code(exc.headers),
+        ) from None
     except TimeoutError as exc:
         raise KumaTimeoutError(
             "The KUMA request timed out.",
@@ -887,6 +899,9 @@ def _public_error_message(
     error_type: type[KumaError],
     remote_message: str | None = None,
     details: Mapping[str, Any] | None = None,
+    *,
+    request_id: str | None = None,
+    support_code: str | None = None,
 ) -> str:
     """Select a frozen user-facing message without trusting arbitrary server text.
 
@@ -895,6 +910,11 @@ def _public_error_message(
         error_type: SDK exception class selected for the code/status.
         remote_message: Optional Backend message from the closed error envelope.
         details: Closed safe details for codes that define them.
+        request_id: Response-local X-Request-ID, revalidated before appending a
+            labelled support reference to official service_busy wording only.
+            Missing or invalid IDs add nothing; recovery IDs are never derived.
+        support_code: Optional closed response support code; appended only for
+            service_busy, never inferred from generic or historical failures.
 
     Returns:
         Canonical English SDK wording, including the read-only ``forbidden``
@@ -906,8 +926,9 @@ def _public_error_message(
         been reduced to a non-empty string.
 
     Postconditions:
-        The returned message is always from the SDK allowlist; unrecognized
-        remote wording cannot become user-visible.
+        The returned message uses SDK allowlisted wording and, for service_busy,
+        at most one validated support code and ID. Unrecognized remote wording cannot
+        become user-visible. Code, retry policy and custom errors are unchanged.
 
     Security/Privacy:
         Prevents provider, database, path, traceback, or balance details from
@@ -927,6 +948,13 @@ def _public_error_message(
         canonical = _NOT_FOUND_MESSAGE
     else:
         canonical = _CODE_ERROR_MESSAGES.get(code, _ERROR_MESSAGES[error_type])
+    if code == "service_busy":
+        support = safe_support_code(support_code)
+        if support is not None:
+            canonical += f" Support code: {support}."
+        support_id = safe_request_id(request_id)
+        if support_id is not None:
+            return f"{canonical} Support ID: {support_id}"
     # Backend may send the same frozen public wording so async and synchronous
     # errors retain it exactly. Any other text falls back to the SDK mapping;
     # this prevents an upstream detail or traceback from becoming user-visible.
@@ -957,7 +985,9 @@ def _mapped_remote_error(error: _RemoteError) -> KumaError:
         service-busy, and generic service failures use deterministic classes.
 
     Security/Privacy:
-        Raw response content and unapproved remote messages are absent.
+        Raw response content and unapproved remote messages are absent. Only
+        service_busy retains the optional closed support header; other codes
+        discard it and no cause is inferred from missing metadata.
     """
     try:
         code, retryable, message, details = _error_envelope(error)
@@ -972,11 +1002,19 @@ def _mapped_remote_error(error: _RemoteError) -> KumaError:
             else ServiceError
         )
     return error_type(
-        _public_error_message(code, error_type, message, details),
+        _public_error_message(
+            code,
+            error_type,
+            message,
+            details,
+            request_id=error.request_id,
+            support_code=error.support_code,
+        ),
         code=code,
         retryable=retryable,
         details=details,
         request_id=error.request_id,
+        support_code=error.support_code if code == "service_busy" else None,
     )
 
 
@@ -989,7 +1027,9 @@ def _judge_error(error: KumaError) -> KumaError:
 
     Returns:
         A fixed ``service_busy`` error for new/legacy internal Judge failures,
-        retaining only retryable and request_id; otherwise the original object.
+        retaining only retryable, request_id and the closed support_code, with
+        validated support references in its display when available; otherwise
+        the original object. This adapter never derives a support code.
 
     Postconditions:
         No response details or remote wording survive the busy projection.
@@ -997,10 +1037,16 @@ def _judge_error(error: KumaError) -> KumaError:
     """
     if error.code in {"model_invalid_result", "model_invalid_response", "service_busy"}:
         return ServiceBusyError(
-            "Service is busy. Please try again later.",
+            _public_error_message(
+                "service_busy",
+                ServiceBusyError,
+                request_id=error.request_id,
+                support_code=error.support_code,
+            ),
             code="service_busy",
             retryable=error.retryable,
             request_id=error.request_id,
+            support_code=safe_support_code(error.support_code),
         )
     return error
 
@@ -1013,6 +1059,7 @@ def mapped_error(
     message: str | None = None,
     details: Mapping[str, Any] | None = None,
     request_id: str | None = None,
+    support_code: str | None = None,
 ) -> KumaError:
     """Map already separated public error fields through the HTTP error policy.
 
@@ -1027,6 +1074,8 @@ def mapped_error(
             Arbitrary remote diagnostics are not retained.
         request_id: Safe HTTP response header ID for the response carrying this
             failure. Never an operation ID, client ID, or JSON-body claim.
+        support_code: Optional closed opaque response support header. Non-busy
+            errors discard it; missing metadata never implies a specific cause.
 
     Returns:
         Unraised public ``KumaError`` suitable for a batch item or asynchronous
@@ -1055,6 +1104,7 @@ def mapped_error(
             status,
             {"error": envelope},
             request_id=request_id,
+            support_code=support_code,
         )
     )
 

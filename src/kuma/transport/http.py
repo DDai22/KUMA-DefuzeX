@@ -32,6 +32,43 @@ def safe_request_id(value: Any) -> str | None:
     )
 
 
+def safe_support_code(value: Any) -> str | None:
+    """Return a closed opaque support code or None, never infer a failure cause.
+
+    Args:
+        value: Untrusted response metadata; only SB000 through SB003 are valid.
+
+    Returns:
+        The unchanged allowed string, or None for all other types/spellings.
+        Transport and official error translation share this pure safety filter.
+    """
+    return (
+        value
+        if isinstance(value, str) and value in {"SB000", "SB001", "SB002", "SB003"}
+        else None
+    )
+
+
+def header_support_code(headers: Any) -> str | None:
+    """Extract exactly one X-KUMA-Support-Code without retaining raw headers.
+
+    Args:
+        headers: HTTPMessage/mapping from a response, or None.
+
+    Returns:
+        A validated opaque code; absent, duplicate or invalid values yield None.
+        No JSON fields or local request identities are used.
+    """
+    if headers is None:
+        return None
+    values = [
+        value
+        for name, value in headers.items()
+        if name.lower() == "x-kuma-support-code"
+    ]
+    return safe_support_code(values[0]) if len(values) == 1 else None
+
+
 def header_request_id(headers: Any) -> str | None:
     """Read one X-Request-ID from urllib headers without retaining other headers.
 
@@ -53,12 +90,18 @@ def header_request_id(headers: Any) -> str | None:
 class _ResponsePayload(dict[str, Any]):
     """Carry response-local correlation outside the closed public JSON keys."""
 
-    def __init__(self, payload: Mapping[str, Any], request_id: str | None) -> None:
+    def __init__(
+        self,
+        payload: Mapping[str, Any],
+        request_id: str | None,
+        support_code: str | None = None,
+    ) -> None:
         """Copy decoded payload keys and attach only sanitized HTTP metadata.
 
         Args:
             payload: Public JSON object returned by BackendClient's transport.
             request_id: Response header ID; never taken from a JSON body field.
+            support_code: Optional closed support-code header, outside JSON.
 
         Postconditions:
             Mapping iteration/serialization and closed-schema checks see only
@@ -66,11 +109,26 @@ class _ResponsePayload(dict[str, Any]):
         """
         super().__init__(payload)
         self._request_id = safe_request_id(request_id)
+        self._support_code = safe_support_code(support_code)
 
 
 def response_request_id(response: Mapping[str, Any]) -> str | None:
     """Return HTTP metadata from an SDK response, never a response JSON key."""
     return response._request_id if type(response) is _ResponsePayload else None
+
+
+def response_support_code(response: Mapping[str, Any]) -> str | None:
+    """Return only SDK response-local support metadata for terminal poll mapping.
+
+    Args:
+        response: Validated Backend mapping consumed by the operation poller.
+
+    Returns:
+        Validated metadata for an SDK response, otherwise None. Plain mappings,
+        including JSON support_code claims, are never trusted. The official
+        error mapper decides whether the failure is busy before exposing it.
+    """
+    return response._support_code if type(response) is _ResponsePayload else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,11 +140,13 @@ class WireResponse:
         payload: Decoded JSON object; scalar/list bodies are rejected earlier.
         request_id: Optional safe X-Request-ID from this response, not the
             client_request_id used for operation recovery.
+        support_code: Optional opaque support header, validated before use.
     """
 
     status: int
     payload: Mapping[str, Any]
     request_id: str | None = None
+    support_code: str | None = None
 
 
 def validate_request(method: str, path: str, idempotency_key: str | None) -> str:
@@ -162,7 +222,7 @@ def validated_response(
             successful response. Legacy mapping transports have no status to test.
 
     Returns:
-        The original public mapping when no safe ID exists; otherwise a detached
+        The original public mapping when no safe metadata exists; otherwise a detached
         mapping with response-local metadata readable by the operation poller.
         JSON keys and serialization are unchanged.
 
@@ -184,9 +244,10 @@ def validated_response(
                 request_id=safe_request_id(response.request_id),
             )
         request_id = safe_request_id(response.request_id)
+        support_code = safe_support_code(response.support_code)
         return (
-            _ResponsePayload(response.payload, request_id)
-            if request_id is not None
+            _ResponsePayload(response.payload, request_id, support_code)
+            if request_id is not None or support_code is not None
             else response.payload
         )
     if not isinstance(response, Mapping):

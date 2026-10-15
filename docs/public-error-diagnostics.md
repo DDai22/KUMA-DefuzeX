@@ -45,6 +45,36 @@ For the official Judge only, `model_invalid_result`, historical
 
 > Service is busy. Please try again later.
 
+An official busy error can include `Support code: SB001.` when the response
+provides exactly one `X-KUMA-Support-Code` header from the closed set `SB000`,
+`SB001`, `SB002`, `SB003`. These are opaque categories for support staff, not raw
+service diagnostics. The optional `exc.support_code` attribute contains that
+validated code; absent, invalid or duplicate headers yield `None`. The SDK never
+guesses a code from generic busy wording. Non-busy errors discard the header.
+
+When the failing HTTP response has one valid `X-Request-ID` (32 lowercase hex
+characters), the SDK appends `Support ID: <id>` to this official busy message.
+Copy the displayed error to support so staff can correlate the response with
+internal diagnostics; the ID itself does not reveal the underlying cause.
+
+```python
+from kuma.errors import ServiceBusyError
+
+try:
+    report = run.judge()  # Your existing Run; this may use service credit.
+except ServiceBusyError as exc:
+    print(exc)  # Service is busy. Please try again later. Support code: SB001. Support ID: <id>
+    # Do not automatically retry because retryable is True.
+```
+
+The suffix is omitted when the header is missing, invalid or duplicated. No ID is
+invented or taken from response JSON, a client request ID or an operation ID.
+For failed asynchronous operations both references describe the current poll
+response; explicit resume never reuses cached diagnostic metadata. Saved terminal
+records retain their existing status/code and do not acquire invented headers. Other error
+messages and custom `KumaError` instances are unchanged. Public code/retryability
+stay unchanged, and private service codes, messages and details are never added.
+
 This display does not identify the underlying cause. It exposes neither remote
 wording nor diagnostic details, and does not ask the user to repair generated
 output. The original `retryable` flag and `request_id` are preserved.

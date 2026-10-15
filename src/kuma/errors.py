@@ -24,6 +24,7 @@ class KumaError(Exception):
         request_id: str | None = None,
         retryable: bool = False,
         details: Mapping[str, Any] | None = None,
+        support_code: str | None = None,
     ) -> None:
         """Store public error attributes without adding diagnostics to the message.
 
@@ -39,6 +40,10 @@ class KumaError(Exception):
                 this does not itself authorize automatic retries.
             details: Safe public fields copied into a read-only mapping; None
                 means no details. Do not include credentials or raw responses.
+            support_code: Optional opaque diagnostic code. Official transport
+                accepts only its closed response-header set for busy failures.
+                Custom callers own supplied values; construction never appends
+                them to the message or derives them from other error fields.
 
         Postconditions:
             No ID is generated or derived from client_request_id, operation_id,
@@ -46,6 +51,7 @@ class KumaError(Exception):
         """
         self.code = code or self.default_code
         self.request_id = request_id
+        self.support_code = support_code
         self.retryable = retryable
         self.details = MappingProxyType(dict(details or {}))
         super().__init__(message)
