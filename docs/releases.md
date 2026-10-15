@@ -6,6 +6,19 @@ main before receiving its own immutable version tag and GitHub Release. This doc
 not evidence that the candidate has shipped. Never move an existing tag or append
 new functionality to an old release as a substitute for a new version.
 
+## 0.3.7 release candidate
+
+An optional patch update, not yet published. Official busy errors can display a
+validated opaque `Support code` and response `Support ID`, making copied error
+text useful to support staff without exposing private diagnostics. The support
+code requires a compatible service header; missing, invalid or duplicate headers
+are omitted. No error cause is guessed and no automatic retry is introduced.
+
+Public error codes, retryability, JSON wire and saved request state are unchanged.
+Custom errors are not reformatted. This candidate preserves the 0.3.6 features
+and community contributions described below. Run the credential-free synthetic
+header check with `python tools/verify_busy_support.py` after installing the SDK.
+
 ## 0.3.6 release candidate
 
 This optional patch is prepared for independent review. Source on main or a
