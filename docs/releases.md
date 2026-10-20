@@ -6,6 +6,40 @@ main before receiving its own immutable version tag and GitHub Release. This doc
 not evidence that the candidate has shipped. Never move an existing tag or append
 new functionality to an old release as a substitute for a new version.
 
+## 0.3.8
+
+An optional patch update with clearer request recovery, privacy classification
+and Judge input-limit diagnostics. Server features depend on service support
+and account permissions.
+
+- Add explicit `high_difficulty=True` generation intent, subject to service
+  support and account permission; it does not change Judge scoring strictness.
+- Preserve bounded explanatory prose, symbolic placeholders and recognizable
+  source credential references without disabling adjacent literal-secret,
+  structured credential or known-signature detection.
+- Reduce repeated multiline privacy-scanning work with line-local context and
+  indexed safe-reference containment, without changing detection rules or limits.
+- Recognize short contextual authorization instructions and multiline conditional
+  credential references without exempting actual headers or literal secrets.
+- Report required-but-unavailable Agent-output redaction negotiation explicitly
+  as `runtime_evidence_unsupported`, before history/local Evidence commit or POST.
+- Expose optional `judge_input_limit` discovery and safe HTTP/async limit details.
+  This measures final system plus serialized user-message UTF-8 bytes, including
+  private overhead, not upload size or tokens. It cannot guarantee an upload fits.
+- Add optional `case_request_id` for caller-persisted logical official generation
+  identity. Same-ID recovery retains the original paid identity, including after
+  success/failure; distinct IDs deliberately request independent generations.
+  New ledger records are bounded; existing recovery remains available at capacity.
+
+No output truncation, automatic paid replacement, global sensitive-data bypass
+or signed Case rewriting is introduced. Callers must integrate explicit job IDs;
+upgrading alone does not assign IDs to their jobs. Omitting the option preserves
+legacy matching, isolated from explicit records. Older SDK readers may reject
+explicitly tagged ledger records; downgrade recovery is not promised. The
+contributor examples and existing public tools remain.
+
+Credential-free regression checks: `python tools/verify_release_038.py`.
+
 ## 0.3.7 release candidate
 
 An optional patch update, not yet published. Official busy errors can display a

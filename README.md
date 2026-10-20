@@ -29,6 +29,11 @@ expose private evaluation logic.
 
 ## Install
 
+Version 0.3.8 adds opt-in high-difficulty generation, explicit
+`case_request_id` recovery, privacy classification fixes and optional Judge input
+budget discovery. Server features depend on service support and account
+permissions. See [release notes](docs/releases.md).
+
 Requires Python 3.10 or newer:
 
 ```bash
